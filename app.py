@@ -13,49 +13,47 @@ st.set_page_config(
 st.markdown("""
 <style>
 
-/* ===== 全局背景 & 字体 ===== */
+/* 全局 */
 body {
     background-color: #0e1117;
     color: #e6edf3;
 }
 
-/* ===== 标题 ===== */
+/* 标题 */
 h1, h2, h3 {
     color: #f0f6fc;
 }
 
-/* ===== Sidebar 背景 ===== */
+/* Sidebar */
 section[data-testid="stSidebar"] {
     background-color: #161b22;
     border-right: 1px solid #30363d;
 }
 
-/* ===== Sidebar 所有文字（关键修复）===== */
 section[data-testid="stSidebar"] * {
     color: #e6edf3 !important;
     font-weight: 500;
 }
 
-/* ===== 单选按钮布局优化 ===== */
+/* 单选按钮 */
 div[role="radiogroup"] label {
     padding: 6px 10px;
     border-radius: 6px;
 }
 
-/* ===== 当前选中项（工业风高亮）===== */
 div[role="radiogroup"] label[data-checked="true"] {
     background-color: #238636;
 }
 
-/* ===== 按钮 ===== */
-.stButton>button {
+/* 按钮 */
+.stButton > button {
     background-color: #238636;
     color: white;
     border-radius: 6px;
     border: none;
 }
 
-/* ===== 文件上传 ===== */
+/* 上传框 */
 [data-testid="stFileUploader"] {
     background-color: #161b22;
     padding: 10px;
@@ -65,16 +63,14 @@ div[role="radiogroup"] label[data-checked="true"] {
 </style>
 """, unsafe_allow_html=True)
 
-
-
 # =========================
-# 标题区域
+# 标题
 # =========================
-st.title("🛢️ Reservoir Analysis Platform")
+st.title("Reservoir Analysis Platform")
 st.caption("Integrated Digital Platform for Well Log Interpretation")
 
 # =========================
-# Sidebar（极简导航）
+# Sidebar
 # =========================
 st.sidebar.title("Control Panel")
 
@@ -90,7 +86,7 @@ if "data" not in st.session_state:
     st.session_state.data = None
 
 # =========================
-# HOME
+# Home
 # =========================
 if menu == "Home":
     col1, col2 = st.columns([2, 1])
@@ -99,22 +95,22 @@ if menu == "Home":
         st.subheader("Platform Overview")
 
         st.markdown("""
-This platform is designed for digital reservoir workflows:
+This platform supports:
 
 - Well log interpretation  
 - Net pay calculation  
 - Multi-zone analysis  
 - AI-based pore typing  
-- Visualization & reporting  
+- Visualization and reporting  
 
-👉 Start from **Data Upload**
+Start from Data Upload.
 """)
 
     with col2:
-        st.info("🧭 Workflow:\n1. Upload Data\n2. Process\n3. Analyze")
+        st.info("Workflow:\n1. Upload Data\n2. Process\n3. Analyze")
 
 # =========================
-# DATA UPLOAD
+# Data Upload
 # =========================
 elif menu == "Data Upload":
     st.subheader("Data Input")
@@ -131,15 +127,14 @@ elif menu == "Data Upload":
             df = pd.read_excel(file, engine="openpyxl")
             st.session_state.data = df
 
-            st.success("✅ Data Loaded")
-
+            st.success("Data loaded successfully")
             st.dataframe(df, use_container_width=True)
 
         except Exception as e:
             st.error(f"Error: {e}")
 
 # =========================
-# WORKSPACE（未来所有功能入口）
+# Workspace
 # =========================
 elif menu == "Workspace":
     st.subheader("Workspace")
@@ -147,15 +142,13 @@ elif menu == "Workspace":
     if st.session_state.data is None:
         st.warning("Please upload data first.")
     else:
-        st.success("✅ Data Ready")
+        st.success("Data ready")
 
-        # ✅ 这里是未来功能入口（非常关键）
         st.markdown("### Available Modules")
 
         st.markdown("""
-- Interpretation (coming)  
-- Zone Comparison (coming)  
-- AI Pore Typing (coming)  
-- Mapping (coming)  
+- Interpretation (coming)
+- Zone Comparison (coming)
+- AI Pore Typing (coming)
+- Mapping (coming)
 """)
-
