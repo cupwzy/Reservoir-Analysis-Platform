@@ -2,8 +2,9 @@
 data/
 outputs/
 logs/
-models/
 modules/*.pkl
+
+*.log
 
 # Python cache
 __pycache__/

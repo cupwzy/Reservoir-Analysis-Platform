@@ -6,10 +6,8 @@ def load_model():
     model_path = "models/rf_model.pkl"
 
     if not os.path.exists(model_path):
-
-        print("Model not found. Training model...")
-
-        from train_model import train_and_save_model
-        train_and_save_model()
+        raise FileNotFoundError(
+            "Model not found. Please train model locally and upload it to models/rf_model.pkl"
+        )
 
     return joblib.load(model_path)

@@ -75,7 +75,7 @@ def train_and_save_model():
     # 5. 模型训练
     # ===============================
     model = RandomForestClassifier(
-        n_estimators=300,
+        n_estimators=50,
         random_state=42,
         n_jobs=-1  
     )
