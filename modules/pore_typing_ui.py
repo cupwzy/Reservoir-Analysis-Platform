@@ -2,11 +2,21 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import os
 
-from modules.pore_model import load_model
-
+from modules.pore_model import load_model_by_name
 
 def run():
+    st.subheader("Model Selection")
+
+    model_files = [f for f in os.listdir("models") if f.endswith(".pkl")]
+    
+    if not model_files:
+            st.error("No model files found in /models")
+            return
+    
+    selected_model = st.selectbox("Select Model", model_files)
+
 
     st.header("Pore Typing")
 
@@ -57,7 +67,7 @@ Output:
         # =========================
         # 3. 模型预测
         # =========================
-        model = load_model()
+        model = load_model_by_name(selected_model)
 
         pred = model.predict(X)
         proba = model.predict_proba(X)
@@ -108,7 +118,7 @@ Output:
         df_plot = df_plot.dropna(subset=["PTR_P", "PORE_V_P", "PoreType"])
 
         # log坐标
-        df_plot["log_PTR"] = np.log10(df_plot["PTR_P"])
+        df_plot = df_plot[df_plot["PTR_P"] > 0]
 
         # =========================
         # 6. Figure 5-10 图
@@ -213,6 +223,8 @@ Output:
             # =========================
             df_new = pd.read_excel(new_file, skiprows=[1])
 
+            st.info(f"Current Model: {selected_model}")
+
             st.subheader("Input Data")
             st.dataframe(df_new.head())
 
@@ -239,7 +251,7 @@ Output:
             # =========================
             # 3. 模型预测
             # =========================
-            model = load_model()
+            pred_new = model.predict(X_new)
 
             pred_new = model.predict(X_new)
             proba_new = model.predict_proba(X_new)

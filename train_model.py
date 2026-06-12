@@ -95,13 +95,17 @@ def train_and_save_model():
     # ===============================
     # 7. 保存模型
     # ===============================
-    os.makedirs("models", exist_ok=True)
+    model_version = "v2"
 
-    model_path = "models/rf_model.pkl"
+    os.makedirs("models", exist_ok=True)   # ✅ 防止目录不存在
+
+    model_path = f"models/rf_model_{model_version}.pkl"
 
     joblib.dump(model, model_path)
+    joblib.dump(model, "models/rf_model_latest.pkl")
 
-    print(f"\n✅ Model saved to: {model_path}")
+    print(f"✅ Model saved: {model_path}")
+
 
     return model
 
