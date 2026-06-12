@@ -8,12 +8,13 @@ from modules.pore_model import load_model_by_name
 
 def run():
 
-    # ✅ 检查 models 文件夹
+    # ===============================
+    # ✅ Model Selection
+    # ===============================
     if not os.path.exists("models"):
         st.error("Models folder not found")
         return
 
-    # ✅ 模型选择（侧边栏）
     st.sidebar.subheader("Model Selection")
 
     model_files = sorted(
@@ -27,23 +28,17 @@ def run():
     selected_model = st.sidebar.selectbox(
         "Select Model",
         model_files,
-        key="model_select_box"
+        index=0,
+        key="model_select_box_main"
     )
 
     st.header("Pore Typing")
 
     st.info(f"Current Model: {selected_model}")
 
-    uploaded_file = st.file_uploader(
-        "Upload Data",
-        type=["xlsx"],
-        key="main_data_upload"
-    )
-
-
-
-    st.header("Pore Typing")
-
+    # ===============================
+    # ✅ 说明
+    # ===============================
     st.info("""
 Feature-based pore typing using Random Forest (8 classes)
 
@@ -56,10 +51,17 @@ Output:
 - Predicted Pore Type
 - Prediction Confidence
 - Transitional Type flag
-- Figure: Pore Throat Distribution (Raw Data)
+- Figure: Pore Throat Distribution
 """)
 
-    uploaded_file = st.file_uploader("Upload Data", type=["xlsx"])
+    # ===============================
+    # ✅ ✅ 唯一一个 Upload Data（重要❗）
+    # ===============================
+    uploaded_file = st.file_uploader(
+        "Upload Analysis Data",
+        type=["xlsx"],
+        key="main_data_upload"
+    )
 
     if uploaded_file:
 
@@ -219,145 +221,35 @@ Output:
         st.plotly_chart(fig, use_container_width=True)
 
         # =========================
-        # 新模块：未分类数据预测
+        # ✅ Capillary Pressure 曲线（新增）
         # =========================
-        st.markdown("---")
-        st.header("New Data Prediction (Unlabeled Data)")
+        if "SW_STRESS_CORR" in df_plot.columns and "PC_STRESS_CORR" in df_plot.columns:
 
-        st.info("""
-        Upload new dataset without labels.
-        Model will predict pore type automatically and provide confidence.
-        """)
+            st.subheader("Capillary Pressure (Pc-Sw Curve)")
 
-        new_file = st.file_uploader("Upload Unlabeled Data", type=["xlsx"], key="new_data")
+            df_pc = df_plot.dropna(subset=["SW_STRESS_CORR", "PC_STRESS_CORR"])
 
-        if new_file:
+            if not df_pc.empty:
 
-            df_new = pd.read_excel(new_file, skiprows=[1])
+                fig_pc = go.Figure()
 
-            st.info(f"Current Model: {selected_model}")
-
-            st.subheader("Input Data")
-            st.dataframe(df_new.head())
-
-            feature_cols = [
-                "CKH_clean",
-                "CPOR_clean",
-                "PTR_P",
-                "PC_STRESS_CORR",
-                "SW_STRESS_CORR"
-            ]
-
-            missing = [c for c in feature_cols if c not in df_new.columns]
-            if missing:
-                st.error(f"Missing columns: {missing}")
-                st.stop()
-
-            df_new = df_new.dropna(subset=feature_cols)
-            X_new = df_new[feature_cols]
-
-            # ✅ 修复重复预测
-            pred_new = model.predict(X_new)
-            proba_new = model.predict_proba(X_new)
-
-            df_new["PoreType"] = pred_new
-            df_new["Confidence"] = proba_new.max(axis=1)
-
-            df_new["Final_Type"] = df_new.apply(
-                lambda row: f"Type {row['PoreType']}"
-                if row["Confidence"] >= 0.6
-                else "Transitional",
-                axis=1
-            )
-
-            st.subheader("Prediction Result")
-
-            display_cols = [c for c in [
-                "wellName", "PTR_P", "PORE_V_P",
-                "PoreType", "Confidence", "Final_Type"
-            ] if c in df_new.columns]
-
-            st.dataframe(df_new[display_cols])
-
-            # =========================
-            # Figure 5-10（新数据）
-            # =========================
-            st.subheader("Figure (New Data)")
-
-            df_plot_new = df_new.copy()
-
-            df_plot_new["PTR_P"] = pd.to_numeric(df_plot_new["PTR_P"], errors="coerce")
-            df_plot_new["PORE_V_P"] = pd.to_numeric(df_plot_new["PORE_V_P"], errors="coerce")
-
-            df_plot_new = df_plot_new[
-                (df_plot_new["PTR_P"] > 0) &
-                (df_plot_new["PTR_P"] <= 1000) &
-                (df_plot_new["PORE_V_P"] > 0) &
-                (df_plot_new["PORE_V_P"] <= 20)
-            ]
-
-            df_plot_new = df_plot_new.dropna(subset=["PTR_P", "PORE_V_P"])
-
-            # ✅ 关键修复
-            df_plot_new = df_plot_new[df_plot_new["PTR_P"] > 0]
-            df_plot_new["log_PTR"] = np.log10(df_plot_new["PTR_P"])
-
-            fig_new = go.Figure()
-
-            for i, cls in enumerate(sorted(df_plot_new["PoreType"].unique())):
-
-                df_cls = df_plot_new[df_plot_new["PoreType"] == cls].copy()
-
-                if len(df_cls) < 5:
-                    continue
-
-                if df_cls["log_PTR"].min() == df_cls["log_PTR"].max():
-                    continue
-
-                df_cls = df_cls.sort_values("log_PTR")
-
-                bins = np.linspace(
-                    df_cls["log_PTR"].min(),
-                    df_cls["log_PTR"].max(),
-                    50
-                )
-
-                df_cls["bin"] = np.digitize(df_cls["log_PTR"], bins)
-
-                grouped = df_cls.groupby("bin").agg({
-                    "log_PTR": "mean",
-                    "PORE_V_P": "mean"
-                }).dropna()
-
-                grouped = grouped.rolling(3, center=True).mean().dropna()
-
-                fig_new.add_trace(
+                fig_pc.add_trace(
                     go.Scatter(
-                        x=10**grouped["log_PTR"],
-                        y=grouped["PORE_V_P"],
+                        x=df_pc["SW_STRESS_CORR"],
+                        y=df_pc["PC_STRESS_CORR"],
                         mode="lines",
-                        name=f"Type {cls}"
+                        name="Pc-Sw",
+                        line=dict(width=2)
                     )
                 )
 
-            fig_new.update_layout(
-                xaxis=dict(type="log"),
-                yaxis=dict(range=[0, 20]),
-                margin=dict(l=40, r=120, t=40, b=40)
-            )
+                fig_pc.update_layout(
+                    xaxis_title="Water Saturation (Sw)",
+                    yaxis_title="Capillary Pressure (Pc)",
+                    margin=dict(l=50, r=50, t=50, b=50)
+                )
 
-            st.plotly_chart(fig_new, use_container_width=True)
+                st.plotly_chart(fig_pc, use_container_width=True)
 
-            # =========================
-            # 下载
-            # =========================
-            st.subheader("Download Results")
-
-            csv = df_new.to_csv(index=False).encode("utf-8-sig")
-
-            st.download_button(
-                label="Download Prediction Results",
-                data=csv,
-                file_name="pore_typing_results.csv",
-                mime="text/csv"
-            )
+            else:
+                st.warning("No valid Pc-Sw data available for plotting")

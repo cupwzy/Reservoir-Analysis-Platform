@@ -364,7 +364,7 @@ elif menu == "Pore Typing":
     st.markdown("---")
 
     # 调用模块
-    pore_typing_ui.run()
+
 
 
 
