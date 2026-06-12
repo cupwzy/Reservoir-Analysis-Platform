@@ -3,6 +3,7 @@ data/
 outputs/
 logs/
 models/
+modules/*.pkl
 
 # Python cache
 __pycache__/
