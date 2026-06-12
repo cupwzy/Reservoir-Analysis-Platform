@@ -1,11 +1,15 @@
 import joblib
+import os
 
 def load_model():
-    return joblib.load("models/rf_model.pkl")
 
+    model_path = "models/rf_model.pkl"
 
-def predict_pore_type(model, feature_df):
-    pred = model.predict(feature_df)
-    prob = model.predict_proba(feature_df)
+    if not os.path.exists(model_path):
 
-    return pred, prob
+        print("Model not found. Training model...")
+
+        from train_model import train_and_save_model
+        train_and_save_model()
+
+    return joblib.load(model_path)
