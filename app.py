@@ -1,9 +1,10 @@
 import streamlit as st
+import pandas as pd
+import plotly.express as px
+
 from modules.uploader import load_master_table
 from modules.mapping import plot_well_map
 from modules.well_data import load_and_merge_well_data
-import pandas as pd
-import plotly.express as px
 from modules import pore_typing_ui
 
 # ===============================
@@ -19,11 +20,13 @@ menu = st.sidebar.radio(
     [
         "Home",
         "Well Map",
-        "Multi-Well Analysis",   # ✅ 原 Workspace
-        "Pore Typing"            # ✅ 新增模块
+        "Multi-Well Analysis", 
+        "Pore Typing"
     ]
 )
 
+if menu == "Pore Typing":
+    pore_typing_ui.run()
 
 # ===============================
 # Session State

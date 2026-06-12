@@ -3,19 +3,43 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import os
-
+import plotly.express as px
 from modules.pore_model import load_model_by_name
 
 def run():
-    st.subheader("Model Selection")
 
-    model_files = [f for f in os.listdir("models") if f.endswith(".pkl")]
-    
+    # ✅ 检查 models 文件夹
+    if not os.path.exists("models"):
+        st.error("Models folder not found")
+        return
+
+    # ✅ 模型选择（侧边栏）
+    st.sidebar.subheader("Model Selection")
+
+    model_files = sorted(
+        [f for f in os.listdir("models") if f.endswith(".pkl")]
+    )
+
     if not model_files:
-            st.error("No model files found in /models")
-            return
-    
-    selected_model = st.selectbox("Select Model", model_files)
+        st.error("No model files found in /models")
+        return
+
+    selected_model = st.sidebar.selectbox(
+        "Select Model",
+        model_files,
+        key="model_select_box"
+    )
+
+    st.header("Pore Typing")
+
+    st.info(f"Current Model: {selected_model}")
+
+    uploaded_file = st.file_uploader(
+        "Upload Data",
+        type=["xlsx"],
+        key="main_data_upload"
+    )
+
 
 
     st.header("Pore Typing")
@@ -75,7 +99,6 @@ Output:
         df["PoreType"] = pred
         df["Confidence"] = proba.max(axis=1)
 
-        # 不确定性判断
         df["Final_Type"] = df.apply(
             lambda row: f"Type {row['PoreType']}"
             if row["Confidence"] >= 0.6
@@ -88,16 +111,12 @@ Output:
         # =========================
         st.subheader("Prediction Result")
 
-        st.dataframe(
-            df[[
-                "wellName",
-                "PTR_P",
-                "PORE_V_P",
-                "PoreType",
-                "Confidence",
-                "Final_Type"
-            ]]
-        )
+        display_cols = [c for c in [
+            "wellName", "PTR_P", "PORE_V_P",
+            "PoreType", "Confidence", "Final_Type"
+        ] if c in df.columns]
+
+        st.dataframe(df[display_cols])
 
         # =========================
         # 5. 数据准备（画图）
@@ -107,7 +126,6 @@ Output:
         df_plot["PTR_P"] = pd.to_numeric(df_plot["PTR_P"], errors="coerce")
         df_plot["PORE_V_P"] = pd.to_numeric(df_plot["PORE_V_P"], errors="coerce")
 
-        # 范围过滤
         df_plot = df_plot[
             (df_plot["PTR_P"] > 0) &
             (df_plot["PTR_P"] <= 1000) &
@@ -117,8 +135,9 @@ Output:
 
         df_plot = df_plot.dropna(subset=["PTR_P", "PORE_V_P", "PoreType"])
 
-        # log坐标
+        # ✅ ✅ 关键修复（必须有）
         df_plot = df_plot[df_plot["PTR_P"] > 0]
+        df_plot["log_PTR"] = np.log10(df_plot["PTR_P"])
 
         # =========================
         # 6. Figure 5-10 图
@@ -134,9 +153,12 @@ Output:
 
         for i, cls in enumerate(sorted(df_plot["PoreType"].unique())):
 
-            df_cls = df_plot[df_plot["PoreType"] == cls]
+            df_cls = df_plot[df_plot["PoreType"] == cls].copy()
 
             if len(df_cls) < 5:
+                continue
+
+            if df_cls["log_PTR"].min() == df_cls["log_PTR"].max():
                 continue
 
             df_cls = df_cls.sort_values("log_PTR")
@@ -154,7 +176,6 @@ Output:
                 "PORE_V_P": "mean"
             }).dropna()
 
-            # 可选平滑（推荐）
             grouped = grouped.rolling(3, center=True).mean().dropna()
 
             fig.add_trace(
@@ -167,7 +188,7 @@ Output:
                 )
             )
 
-        # 高亮不确定点
+        # ✅ Transitional点
         df_uncertain = df_plot[df_plot["Confidence"] < 0.6]
 
         if not df_uncertain.empty:
@@ -181,9 +202,6 @@ Output:
                 )
             )
 
-        # =========================
-        # 7. 图形样式
-        # =========================
         fig.update_layout(
             xaxis=dict(
                 title="Pore Throat Radius (μm)",
@@ -194,15 +212,12 @@ Output:
                 title="Pore Volume (%)",
                 range=[0, 20]
             ),
-            legend=dict(
-                x=1.02,
-                y=1
-            ),
+            legend=dict(x=1.02, y=1),
             margin=dict(l=50, r=150, t=50, b=50)
         )
 
         st.plotly_chart(fig, use_container_width=True)
-        
+
         # =========================
         # 新模块：未分类数据预测
         # =========================
@@ -218,9 +233,6 @@ Output:
 
         if new_file:
 
-            # =========================
-            # 1. 读取新数据
-            # =========================
             df_new = pd.read_excel(new_file, skiprows=[1])
 
             st.info(f"Current Model: {selected_model}")
@@ -228,9 +240,6 @@ Output:
             st.subheader("Input Data")
             st.dataframe(df_new.head())
 
-            # =========================
-            # 2. 特征检查
-            # =========================
             feature_cols = [
                 "CKH_clean",
                 "CPOR_clean",
@@ -245,21 +254,15 @@ Output:
                 st.stop()
 
             df_new = df_new.dropna(subset=feature_cols)
-
             X_new = df_new[feature_cols]
 
-            # =========================
-            # 3. 模型预测
-            # =========================
-            pred_new = model.predict(X_new)
-
+            # ✅ 修复重复预测
             pred_new = model.predict(X_new)
             proba_new = model.predict_proba(X_new)
 
             df_new["PoreType"] = pred_new
             df_new["Confidence"] = proba_new.max(axis=1)
 
-            # ✅ 不确定性判断
             df_new["Final_Type"] = df_new.apply(
                 lambda row: f"Type {row['PoreType']}"
                 if row["Confidence"] >= 0.6
@@ -267,24 +270,17 @@ Output:
                 axis=1
             )
 
-            # =========================
-            # 4. 输出结果
-            # =========================
             st.subheader("Prediction Result")
 
-            st.dataframe(
-                df_new[[
-                    "wellName",
-                    "PTR_P",
-                    "PORE_V_P",
-                    "PoreType",
-                    "Confidence",
-                    "Final_Type"
-                ]]
-            )
+            display_cols = [c for c in [
+                "wellName", "PTR_P", "PORE_V_P",
+                "PoreType", "Confidence", "Final_Type"
+            ] if c in df_new.columns]
+
+            st.dataframe(df_new[display_cols])
 
             # =========================
-            # 5. Figure 5-10（新数据）
+            # Figure 5-10（新数据）
             # =========================
             st.subheader("Figure (New Data)")
 
@@ -293,7 +289,6 @@ Output:
             df_plot_new["PTR_P"] = pd.to_numeric(df_plot_new["PTR_P"], errors="coerce")
             df_plot_new["PORE_V_P"] = pd.to_numeric(df_plot_new["PORE_V_P"], errors="coerce")
 
-            # 同样过滤
             df_plot_new = df_plot_new[
                 (df_plot_new["PTR_P"] > 0) &
                 (df_plot_new["PTR_P"] <= 1000) &
@@ -303,15 +298,20 @@ Output:
 
             df_plot_new = df_plot_new.dropna(subset=["PTR_P", "PORE_V_P"])
 
+            # ✅ 关键修复
+            df_plot_new = df_plot_new[df_plot_new["PTR_P"] > 0]
             df_plot_new["log_PTR"] = np.log10(df_plot_new["PTR_P"])
 
             fig_new = go.Figure()
 
             for i, cls in enumerate(sorted(df_plot_new["PoreType"].unique())):
 
-                df_cls = df_plot_new[df_plot_new["PoreType"] == cls]
+                df_cls = df_plot_new[df_plot_new["PoreType"] == cls].copy()
 
                 if len(df_cls) < 5:
+                    continue
+
+                if df_cls["log_PTR"].min() == df_cls["log_PTR"].max():
                     continue
 
                 df_cls = df_cls.sort_values("log_PTR")
@@ -349,7 +349,7 @@ Output:
             st.plotly_chart(fig_new, use_container_width=True)
 
             # =========================
-            # 6. 下载结果
+            # 下载
             # =========================
             st.subheader("Download Results")
 
