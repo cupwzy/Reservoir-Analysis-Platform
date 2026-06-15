@@ -9,7 +9,7 @@ from modules.pore_model import load_model_by_name
 def run():
 
     # ===============================
-    # ✅ Model Selection
+    # Model Selection
     # ===============================
     if not os.path.exists("models"):
         st.error("Models folder not found")
@@ -37,7 +37,7 @@ def run():
     st.info(f"Current Model: {selected_model}")
 
     # ===============================
-    # ✅ 说明
+    # 说明
     # ===============================
     st.info("""
 Feature-based pore typing using Random Forest (8 classes)
@@ -55,7 +55,7 @@ Output:
 """)
 
     # ===============================
-    # ✅ ✅ 唯一一个 Upload Data（重要❗）
+    # 唯一一个 Upload Data
     # ===============================
     uploaded_file = st.file_uploader(
         "Upload Analysis Data",
@@ -137,7 +137,7 @@ Output:
 
         df_plot = df_plot.dropna(subset=["PTR_P", "PORE_V_P", "PoreType"])
 
-        # ✅ ✅ 关键修复（必须有）
+        # 关键修复
         df_plot = df_plot[df_plot["PTR_P"] > 0]
         df_plot["log_PTR"] = np.log10(df_plot["PTR_P"])
 
@@ -190,7 +190,7 @@ Output:
                 )
             )
 
-        # ✅ Transitional点
+        # Transitional点
         df_uncertain = df_plot[df_plot["Confidence"] < 0.6]
 
         if not df_uncertain.empty:
@@ -221,35 +221,37 @@ Output:
         st.plotly_chart(fig, use_container_width=True)
 
         # =========================
-        # ✅ Capillary Pressure 曲线（新增）
+        # Capillary Pressure 曲线
         # =========================
         if "SW_STRESS_CORR" in df_plot.columns and "PC_STRESS_CORR" in df_plot.columns:
 
-            st.subheader("Capillary Pressure (Pc-Sw Curve)")
+            st.subheader("Capillary Pressure Curves")
 
             df_pc = df_plot.dropna(subset=["SW_STRESS_CORR", "PC_STRESS_CORR"])
 
-            if not df_pc.empty:
+            fig_pc = go.Figure()
 
-                fig_pc = go.Figure()
+            for cls in df_pc["PoreType"].unique():
+                
+                group = df_pc[df_pc["PoreType"] == cls]
+
+                group = group.sort_values("SW_STRESS_CORR")
 
                 fig_pc.add_trace(
                     go.Scatter(
-                        x=df_pc["SW_STRESS_CORR"],
-                        y=df_pc["PC_STRESS_CORR"],
+                        x=group["SW_STRESS_CORR"],
+                        y=group["PC_STRESS_CORR"],
                         mode="lines",
-                        name="Pc-Sw",
-                        line=dict(width=2)
+                        name=f"Type {cls}",
+                        opacity=0.6
                     )
                 )
 
-                fig_pc.update_layout(
-                    xaxis_title="Water Saturation (Sw)",
-                    yaxis_title="Capillary Pressure (Pc)",
-                    margin=dict(l=50, r=50, t=50, b=50)
-                )
+            fig_pc.update_layout(
+                xaxis_title="Water Saturation (Sw)",
+                yaxis_title="Capillary Pressure (Pc)",
+                yaxis=dict(type="log"),   # 关键（log轴）
+                margin=dict(l=50, r=50, t=50, b=50)
+            )
 
-                st.plotly_chart(fig_pc, use_container_width=True)
-
-            else:
-                st.warning("No valid Pc-Sw data available for plotting")
+            st.plotly_chart(fig_pc, use_container_width=True)
