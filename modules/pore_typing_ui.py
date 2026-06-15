@@ -5,6 +5,80 @@ import plotly.graph_objects as go
 import os
 import plotly.express as px
 from modules.pore_model import load_model_by_name
+from modules.rac import train_rca_model, predict_k
+def render_rca_panel(df_plot, rca_models, key_prefix):
+    
+    fig_rca = go.Figure()
+
+    # ===============================
+    # 散点
+    # ===============================
+    for t in sorted(df_plot["PoreType"].unique()):
+        group = df_plot[df_plot["PoreType"] == t]
+
+        fig_rca.add_trace(
+            go.Scatter(
+                x=group["CPOR_clean"],
+                y=group["CKH_clean"],
+                mode="markers",
+                marker=dict(size=3, opacity=0.4),
+                name=f"Type {t}"
+            )
+        )
+
+    # ===============================
+    # RCA曲线
+    # ===============================
+    phi_curve = np.linspace(0.01, 0.4, 200)
+
+    for t, params in rca_models.items():
+
+        k_curve = params["a"] * (phi_curve ** params["b"])
+
+        fig_rca.add_trace(
+            go.Scatter(
+                x=phi_curve,
+                y=k_curve,
+                mode="lines",
+                line=dict(width=2),
+                name=f"Type {t}"
+            )
+        )
+
+    # ===============================
+    # ✅ 当前选择高亮（重点🔥）
+    # ===============================
+    phi_input = st.session_state["phi_input"]
+    type_input = st.session_state["type_input"]
+
+    k_pred = rca_models[type_input]["a"] * (phi_input ** rca_models[type_input]["b"])
+
+    fig_rca.add_trace(
+        go.Scatter(
+            x=[phi_input],
+            y=[k_pred],
+            mode="markers",
+            marker=dict(size=10, color="black"),
+            name="Prediction",
+        )
+    )
+
+    fig_rca.update_layout(
+        xaxis_title="CPOR_clean (v/v)",
+        yaxis_title="CKH_clean (mD)",
+        yaxis=dict(type="log"),
+        xaxis=dict(range=[0, 0.4])
+    )
+
+    st.plotly_chart(
+        fig_rca,
+        use_container_width=True,
+        key=f"rca_chart_{key_prefix}"
+    )
+
+    # ✅ 输出预测
+    st.success(f"Predicted k = {k_pred:.2f} mD")
+
 
 def run():
 
@@ -285,8 +359,9 @@ Output:
                 yaxis_title="Capillary Pressure (Pc)",
                 yaxis=dict(
                     type="log",
-                    tickvals=[1, 10, 100, 1000, 10000],
-                    ticktext=["1", "10", "100", "1000", "10000"],
+                    range=[-2, 4],
+                    tickvals=[0.1, 1, 10, 100, 1000, 10000],
+                    ticktext=["0.1", "1", "10", "100", "1000", "10000"],
                 ),
                 margin=dict(l=50, r=50, t=50, b=50)
             )
@@ -298,6 +373,32 @@ Output:
         # =========================
         st.markdown("---")
         st.header("Reservoir Classification Methods")
+        # ===============================
+        # RCA模型（全局）
+        # ===============================
+        rca_models = train_rca_model(df_plot)
+        # ===============================
+        # RCA全局输入
+        # ===============================
+        st.subheader("RCA Prediction Control")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.session_state["phi_input"] = st.number_input(
+                "Input Porosity (v/v)",
+                min_value=0.01,
+                max_value=0.4,
+                value=st.session_state.get("phi_input", 0.15),
+                step=0.01
+            )
+
+        with col2:
+            st.session_state["type_input"] = st.selectbox(
+                "Select Pore Type",
+                options=sorted(rca_models.keys()),
+                index=0
+            )
 
         tab1, tab2, tab3 = st.tabs(["FZI Method", "R35 Method", "Pittman Method"])
         
@@ -310,6 +411,12 @@ Output:
         )
 
         phi = np.linspace(0.01, 0.4, 100)
+        
+        # ===============================
+        # 数据过滤
+        # ===============================
+        df_plot = df_plot[df_plot["CKH_clean"] > 0]
+        df_plot = df_plot[df_plot["CPOR_clean"] > 0]
 
         with tab1:
 
@@ -317,11 +424,13 @@ Output:
 
             fig = go.Figure()
 
+            # ===============================
             # 散点（按Type）
+            # ===============================
             types = sorted(df_plot["PoreType"].dropna().unique())
 
             color_map = {
-                1: "blue", 2: "green", 3: "yellow", 4: "orange",
+                1: "blue", 2: "green", 3: "goldenrod", 4: "orange",
                 5: "red", 6: "purple", 7: "brown", 8: "black"
             }
 
@@ -333,15 +442,27 @@ Output:
                         x=group["CPOR_clean"],
                         y=group["CKH_clean"],
                         mode="markers",
-                        marker=dict(size=3, color=color_map.get(t, "gray"), opacity=0.6),
+                        marker=dict(
+                            size=3,
+                            color=color_map.get(t, "gray"),
+                            opacity=0.6
+                        ),
                         name=f"Type {t}"
                     )
                 )
 
-            # FZI线
+            # ===============================
+            # 必须补上的变量
+            # ===============================
             phi = np.linspace(0.01, 0.35, 200)
             fzi_values = [0.35, 0.8, 1.77, 4]
 
+            ymax = 10**4
+            ymin = 10**-3
+
+            # ===============================
+            # FZI曲线
+            # ===============================
             for fzi in fzi_values:
 
                 k = 1014 * (fzi**2) * (phi**3) / ((1 - phi)**2)
@@ -356,19 +477,39 @@ Output:
                     )
                 )
 
+                # x 在最右端
+                x_end = phi[-1]
+
+                # y 强制限制在可见范围
+                y_end = max(min(k[-1], ymax), ymin)
+
+                
                 fig.add_annotation(
-                    x=phi[-1],
-                    y=k[-1],
+                    x=x_end,
+                    y=y_end,
                     text=f"FZI = {fzi}",
                     showarrow=False,
                     xanchor="left",
-                    font=dict(size=10)
+                    yanchor="middle",
+                    font=dict(size=11)
                 )
-
+                
+            # ===============================
+            # 坐标轴
+            # ===============================
             fig.update_layout(
                 xaxis_title="CPOR_clean (v/v)",
                 yaxis_title="CKH_clean (mD)",
-                yaxis=dict(type="log", range=[-3, 4]),
+                
+                xaxis=dict(
+                        range=[0, 0.4]  
+                    ),
+
+                yaxis=dict(
+                    type="log",
+                    range=[-3, 4]
+                ),
+
                 plot_bgcolor="white",
                 legend=dict(title="Pore Type")
             )
@@ -377,8 +518,7 @@ Output:
             fig.update_yaxes(showgrid=True, gridcolor="lightgray")
 
             st.plotly_chart(fig, use_container_width=True)
-
-
+            render_rca_panel(df_plot, rca_models, key_prefix="tab1")
 
         with tab2:
 
@@ -390,7 +530,7 @@ Output:
             types = sorted(df_plot["PoreType"].dropna().unique())
 
             color_map = {
-                1: "blue", 2: "green", 3: "yellow", 4: "orange",
+                1: "blue", 2: "green", 3: "goldenrod", 4: "orange",
                 5: "red", 6: "purple", 7: "brown", 8: "black"
             }
 
@@ -446,10 +586,9 @@ Output:
             fig_r35.update_yaxes(showgrid=True, gridcolor="lightgray")
 
             st.plotly_chart(fig_r35, use_container_width=True)
+            render_rca_panel(df_plot, rca_models, key_prefix="tab2")
 
         with tab3:
-
-            import numpy as np
 
             st.subheader("Pittman Method")
 
@@ -459,7 +598,7 @@ Output:
             types = sorted(df_plot["PoreType"].dropna().unique())
 
             color_map = {
-                1: "blue", 2: "green", 3: "yellow", 4: "orange",
+                1: "blue", 2: "green", 3: "goldenrod", 4: "orange",
                 5: "red", 6: "purple", 7: "brown", 8: "black"
             }
 
@@ -476,13 +615,33 @@ Output:
                     )
                 )
 
-            # Pittman曲线
+            # ===============================
+            # Pittman 曲线
+            # ===============================
             phi = np.linspace(0.01, 0.35, 200)
             pit_levels = [0.2, 0.5, 1, 2, 5, 10]
 
+            ymax = 10**4
+            ymin = 10**-3
+
+            # 只计算一次 scale（关键）
+            k_mean = df_plot["CKH_clean"].median()
+            phi_mean = df_plot["CPOR_clean"].median()
+
+            # 防止异常
+            if phi_mean <= 0 or phi_mean >= 1:
+                phi_mean = 0.15
+
+            base = (phi_mean**3) / ((1 - phi_mean)**2)
+            scale = k_mean / base
+
+            # ===============================
+            # 循环画曲线
+            # ===============================
             for p in pit_levels:
 
-                k = (phi**2.5) * (p * 50)
+                # 正确公式（必须有）
+                k = scale * p * (phi**3) / ((1 - phi)**2)
 
                 fig_pit.add_trace(
                     go.Scatter(
@@ -494,18 +653,28 @@ Output:
                     )
                 )
 
+                # 找图内可见的“最右点”
+                visible_idx = np.where((k >= ymin) & (k <= ymax))[0]
+
+                if len(visible_idx) == 0:
+                    continue
+
+                idx = visible_idx[-1]
+
                 fig_pit.add_annotation(
-                    x=phi[-1],
-                    y=k[-1],
+                    x=phi[idx],
+                    y=k[idx],
                     text=f"{p}",
                     showarrow=False,
                     xanchor="left",
+                    yanchor="middle",
                     font=dict(size=10)
                 )
 
             fig_pit.update_layout(
                 xaxis_title="CPOR_clean (v/v)",
                 yaxis_title="CKH_clean (mD)",
+                xaxis=dict(range=[0, 0.4]),
                 yaxis=dict(type="log", range=[-3, 4]),
                 plot_bgcolor="white",
                 legend=dict(title="Pore Type")
@@ -515,3 +684,6 @@ Output:
             fig_pit.update_yaxes(showgrid=True, gridcolor="lightgray")
 
             st.plotly_chart(fig_pit, use_container_width=True)
+            render_rca_panel(df_plot, rca_models, key_prefix="tab3")
+        
+
