@@ -315,24 +315,84 @@ Output:
 
             st.subheader("FZI Method")
 
-            fig_fzi = go.Figure()
+            df_fzi = df_plot.copy()
 
-            # Scatter
-            fig_fzi.add_trace(
-                go.Scatter(
-                    x=df_plot["CPOR_clean"],
-                    y=df_plot["CKH_clean"],
-                    mode="markers",
-                    marker=marker_style,
-                    name="Samples"
-                )
+            # =========================
+            # 1. 计算 FZI（核心）
+            # =========================
+            df_fzi["RQI"] = 0.0314 * np.sqrt(
+                df_fzi["CKH_clean"] / df_fzi["CPOR_clean"]
             )
 
-            # FZI Lines
-            fzi_values = [0.2, 0.5, 1, 2, 5]
+            df_fzi["phi_z"] = df_fzi["CPOR_clean"] / (1 - df_fzi["CPOR_clean"])
+
+            df_fzi["FZI"] = df_fzi["RQI"] / df_fzi["phi_z"]
+
+            # =========================
+            # 2. FZI 分级规则
+            # =========================
+            def classify_fzi(fzi):
+
+                if fzi < 0.35:
+                    return "Poor"
+                elif fzi < 0.8:
+                    return "Low"
+                elif fzi < 1.77:
+                    return "Medium"
+                elif fzi < 4:
+                    return "Good"
+                else:
+                    return "Excellent"
+
+            df_fzi["FlowUnit"] = df_fzi["FZI"].apply(classify_fzi)
+
+            # =========================
+            # 3. Flow Unit 颜色映射（专业）
+            # =========================
+            color_map = {
+                "Poor": "blue",
+                "Low": "green",
+                "Medium": "yellow",
+                "Good": "orange",
+                "Excellent": "red"
+            }
+
+            # =========================
+            # 4. 绘图（按 Flow Unit 分类）
+            # =========================
+            fig_fzi = go.Figure()
+
+            for fu in color_map.keys():
+
+                group = df_fzi[df_fzi["FlowUnit"] == fu]
+
+                if len(group) == 0:
+                    continue
+
+                fig_fzi.add_trace(
+                    go.Scatter(
+                        x=group["CPOR_clean"],
+                        y=group["CKH_clean"],
+                        mode="markers",
+                        marker=dict(
+                            size=5,
+                            color=color_map[fu]
+                        ),
+                        name=fu
+                    )
+                )
+
+            # =========================
+            # 5. FZI 等值线（参考线）
+            # =========================
+            phi = np.linspace(0.01, 0.4, 100)
+
+            fzi_values = [0.35, 0.8, 1.77, 4]
 
             for fzi in fzi_values:
+
                 k = (fzi * phi / (1 - phi))**2
+
                 fig_fzi.add_trace(
                     go.Scatter(
                         x=phi,
@@ -343,14 +403,30 @@ Output:
                     )
                 )
 
+            # =========================
+            # 6. 图形样式
+            # =========================
             fig_fzi.update_layout(
                 xaxis_title="Porosity (φ)",
                 yaxis_title="Permeability (k)",
-                yaxis=dict(type="log")
+                yaxis=dict(
+                    type="log",
+                    tickvals=[1, 10, 100, 1000, 10000],
+                    ticktext=["1", "10", "100", "1000", "10000"]
+                ),
+                margin=dict(l=50, r=50, t=50, b=50)
             )
 
             st.plotly_chart(fig_fzi, use_container_width=True)
-        
+
+            # =========================
+            # 7. 输出统计信息
+            # =========================
+            st.write("FZI Summary")
+
+            st.dataframe(
+                df_fzi[["FZI", "FlowUnit"]].describe()
+            )
         with tab2:
 
             st.subheader("R35 Method")
