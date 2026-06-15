@@ -29,11 +29,13 @@ def render_rca_panel(df_plot, rca_models, key_prefix):
     # ===============================
     # RCA曲线
     # ===============================
+    
     phi_curve = np.linspace(0.01, 0.4, 200)
 
     for t, params in rca_models.items():
 
-        k_curve = params["a"] * (phi_curve ** params["b"])
+        logk = params["b"] * phi_curve + params["a"]
+        k_curve = 10 ** logk
 
         fig_rca.add_trace(
             go.Scatter(
@@ -46,12 +48,12 @@ def render_rca_panel(df_plot, rca_models, key_prefix):
         )
 
     # ===============================
-    # ✅ 当前选择高亮（重点🔥）
+    # Prediction点 当前选择高亮
     # ===============================
     phi_input = st.session_state["phi_input"]
     type_input = st.session_state["type_input"]
-
-    k_pred = rca_models[type_input]["a"] * (phi_input ** rca_models[type_input]["b"])
+    params = rca_models[type_input]
+    k_pred = 10 ** (params["b"] * phi_input + params["a"])
 
     fig_rca.add_trace(
         go.Scatter(
@@ -76,9 +78,8 @@ def render_rca_panel(df_plot, rca_models, key_prefix):
         key=f"rca_chart_{key_prefix}"
     )
 
-    # ✅ 输出预测
+    # 输出预测
     st.success(f"Predicted k = {k_pred:.2f} mD")
-
 
 def run():
 
