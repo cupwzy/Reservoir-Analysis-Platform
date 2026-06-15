@@ -313,44 +313,33 @@ Output:
 
         with tab1:
 
-            st.subheader("FZI Method (CoreLab Style)")
-
-            df_fzi = df_plot.copy()
-
-            # =========================
-            # ✅ FZI计算
-            # =========================
-            df_fzi["RQI"] = 0.0314 * np.sqrt(
-                df_fzi["CKH_clean"] / df_fzi["CPOR_clean"]
-            )
-            df_fzi["phi_z"] = df_fzi["CPOR_clean"] / (1 - df_fzi["CPOR_clean"])
-            df_fzi["FZI"] = df_fzi["RQI"] / df_fzi["phi_z"]
+            st.subheader("FZI Method")
 
             fig = go.Figure()
 
-            # =========================
-            # ✅ 多颜色散点（按PoreType）
-            # =========================
-            fig.add_trace(
-                go.Scatter(
-                    x=df_fzi["CPOR_clean"],
-                    y=df_fzi["CKH_clean"],
-                    mode="markers",
-                    marker=dict(
-                        size=6,
-                        color=df_fzi["PoreType"],
-                        colorscale="Jet",   # ✅ 更接近原图
-                        opacity=0.9
-                    ),
-                    name="Samples"
+            # 散点（按Type）
+            types = sorted(df_plot["PoreType"].dropna().unique())
+
+            color_map = {
+                1: "blue", 2: "green", 3: "yellow", 4: "orange",
+                5: "red", 6: "purple", 7: "brown", 8: "black"
+            }
+
+            for t in types:
+                group = df_plot[df_plot["PoreType"] == t]
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=group["CPOR_clean"],
+                        y=group["CKH_clean"],
+                        mode="markers",
+                        marker=dict(size=3, color=color_map.get(t, "gray"), opacity=0.6),
+                        name=f"Type {t}"
+                    )
                 )
-            )
 
-            # =========================
-            # ✅ FZI曲线（关键🔥）
-            # =========================
+            # FZI线
             phi = np.linspace(0.01, 0.35, 200)
-
             fzi_values = [0.35, 0.8, 1.77, 4]
 
             for fzi in fzi_values:
@@ -362,50 +351,34 @@ Output:
                         x=phi,
                         y=k,
                         mode="lines",
-                        line=dict(
-                            color="gray",
-                            width=2           # ✅ 更粗
-                        ),
-                        showlegend=False     # ✅ 不放legend
+                        line=dict(color="gray", width=2),
+                        showlegend=False
                     )
                 )
 
-                # ✅ 在曲线末端加标签
                 fig.add_annotation(
                     x=phi[-1],
                     y=k[-1],
-                    text=f"FZI={fzi}",
+                    text=f"FZI = {fzi}",
                     showarrow=False,
                     xanchor="left",
-                    font=dict(size=10, color="black")
+                    font=dict(size=10)
                 )
 
-            # =========================
-            # ✅ 工业级样式（关键🔥🔥）
-            # =========================
             fig.update_layout(
-                xaxis_title="Porosity_clean (v/v)",
-                yaxis_title="Perm_k_clean (mD)",
-
-                yaxis=dict(
-                    type="log",
-                    tickvals=[0.001, 0.01, 0.1, 1, 10, 100, 1000],
-                    gridcolor="lightgray"
-                ),
-
-                xaxis=dict(
-                    gridcolor="lightgray"
-                ),
-
+                xaxis_title="CPOR_clean (v/v)",
+                yaxis_title="CKH_clean (mD)",
+                yaxis=dict(type="log", range=[-3, 4]),
                 plot_bgcolor="white",
-                margin=dict(l=40, r=40, t=40, b=40)
+                legend=dict(title="Pore Type")
             )
 
-            # ✅ 更密的网格（关键视觉）
-            fig.update_xaxes(showgrid=True, gridwidth=0.5)
-            fig.update_yaxes(showgrid=True, gridwidth=0.5)
+            fig.update_xaxes(showgrid=True, gridcolor="lightgray")
+            fig.update_yaxes(showgrid=True, gridcolor="lightgray")
 
             st.plotly_chart(fig, use_container_width=True)
+
+
 
         with tab2:
 
@@ -413,73 +386,132 @@ Output:
 
             fig_r35 = go.Figure()
 
-            fig_r35.add_trace(
-                go.Scatter(
-                    x=df_plot["CPOR_clean"],
-                    y=df_plot["CKH_clean"],
-                    mode="markers",
-                    marker=marker_style,
-                    name="Samples"
-                )
-            )
+            # 散点
+            types = sorted(df_plot["PoreType"].dropna().unique())
 
+            color_map = {
+                1: "blue", 2: "green", 3: "yellow", 4: "orange",
+                5: "red", 6: "purple", 7: "brown", 8: "black"
+            }
+
+            for t in types:
+                group = df_plot[df_plot["PoreType"] == t]
+
+                fig_r35.add_trace(
+                    go.Scatter(
+                        x=group["CPOR_clean"],
+                        y=group["CKH_clean"],
+                        mode="markers",
+                        marker=dict(size=3, color=color_map.get(t, "gray"), opacity=0.6),
+                        name=f"Type {t}"
+                    )
+                )
+
+            # R35线（灰色实线 + 标注）
+            phi = np.linspace(0.01, 0.35, 200)
             r35_values = [10, 50, 100, 500]
 
             for r35 in r35_values:
+
                 ptr = r35 * phi / (1 - phi)
+
                 fig_r35.add_trace(
                     go.Scatter(
                         x=phi,
                         y=ptr,
                         mode="lines",
-                        line=dict(color="black", dash="dot"),
-                        name=f"R35={r35}"
+                        line=dict(color="gray", width=2),
+                        showlegend=False
                     )
                 )
 
+                fig_r35.add_annotation(
+                    x=phi[-1],
+                    y=ptr[-1],
+                    text=f"R35 = {r35}",
+                    showarrow=False,
+                    xanchor="left",
+                    font=dict(size=10)
+                )
+
             fig_r35.update_layout(
-                xaxis_title="Porosity (φ)",
-                yaxis_title="Pore Throat Radius (μm)",
-                yaxis=dict(type="log")
+                xaxis_title="CPOR_clean (v/v)",
+                yaxis_title="CKH_clean (mD)",
+                yaxis=dict(type="log", range=[-3, 4]),
+                plot_bgcolor="white",
+                legend=dict(title="Pore Type")
             )
 
+            fig_r35.update_xaxes(showgrid=True, gridcolor="lightgray")
+            fig_r35.update_yaxes(showgrid=True, gridcolor="lightgray")
+
             st.plotly_chart(fig_r35, use_container_width=True)
-        
+
         with tab3:
+
+            import numpy as np
 
             st.subheader("Pittman Method")
 
-            fig_pittman = go.Figure()
+            fig_pit = go.Figure()
 
-            fig_pittman.add_trace(
-                go.Scatter(
-                    x=df_plot["CPOR_clean"],
-                    y=df_plot["CKH_clean"],
-                    mode="markers",
-                    marker=marker_style,
-                    name="Samples"
+            # 散点
+            types = sorted(df_plot["PoreType"].dropna().unique())
+
+            color_map = {
+                1: "blue", 2: "green", 3: "yellow", 4: "orange",
+                5: "red", 6: "purple", 7: "brown", 8: "black"
+            }
+
+            for t in types:
+                group = df_plot[df_plot["PoreType"] == t]
+
+                fig_pit.add_trace(
+                    go.Scatter(
+                        x=group["CPOR_clean"],
+                        y=group["CKH_clean"],
+                        mode="markers",
+                        marker=dict(size=3, color=color_map.get(t, "gray"), opacity=0.6),
+                        name=f"Type {t}"
+                    )
                 )
-            )
 
+            # Pittman曲线
+            phi = np.linspace(0.01, 0.35, 200)
             pit_levels = [0.2, 0.5, 1, 2, 5, 10]
 
             for p in pit_levels:
+
                 k = (phi**2.5) * (p * 50)
 
-                fig_pittman.add_trace(
+                fig_pit.add_trace(
                     go.Scatter(
                         x=phi,
                         y=k,
                         mode="lines",
-                        line=dict(color="black"),
-                        name=f"{p}"
+                        line=dict(color="gray", width=2),
+                        showlegend=False
                     )
                 )
 
-            fig_pittman.update_layout(
-                xaxis_title="Porosity (φ)",
-                yaxis_title="Permeability (k)",
-                yaxis=dict(type="log")
+                fig_pit.add_annotation(
+                    x=phi[-1],
+                    y=k[-1],
+                    text=f"{p}",
+                    showarrow=False,
+                    xanchor="left",
+                    font=dict(size=10)
+                )
+
+            fig_pit.update_layout(
+                xaxis_title="CPOR_clean (v/v)",
+                yaxis_title="CKH_clean (mD)",
+                yaxis=dict(type="log", range=[-3, 4]),
+                plot_bgcolor="white",
+                legend=dict(title="Pore Type")
             )
 
-            st.plotly_chart(fig_pittman, use_container_width=True)
+            fig_pit.update_xaxes(showgrid=True, gridcolor="lightgray")
+            fig_pit.update_yaxes(showgrid=True, gridcolor="lightgray")
+
+            st.plotly_chart(fig_pit, use_container_width=True)
