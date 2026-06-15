@@ -227,13 +227,46 @@ Output:
 
             st.subheader("Capillary Pressure Curves")
 
-            df_pc = df_plot.dropna(subset=["SW_STRESS_CORR", "PC_STRESS_CORR"])
+            # 一定要 copy，避免污染原数据
+            df_pc = df_plot.copy()
+
+            # =========================
+            # 强制清洗 Sw 和 Pc
+            # =========================
+            df_pc["SW_STRESS_CORR"] = pd.to_numeric(
+                df_pc["SW_STRESS_CORR"], errors="coerce"
+            )
+
+            df_pc["PC_STRESS_CORR"] = pd.to_numeric(
+                df_pc["PC_STRESS_CORR"], errors="coerce"
+            )
+
+            # 删除 NaN
+            df_pc = df_pc.dropna(subset=["SW_STRESS_CORR", "PC_STRESS_CORR"])
+
+            # 过滤 Sw（0–1）
+            df_pc = df_pc[
+                (df_pc["SW_STRESS_CORR"] >= 0) &
+                (df_pc["SW_STRESS_CORR"] <= 1)
+            ]
+
+            # 过滤 Pc
+            df_pc = df_pc[
+                (df_pc["PC_STRESS_CORR"] > 0) &
+                (df_pc["PC_STRESS_CORR"] < 1e6)
+            ]
+
+            # debug
+            st.write("Sw range:", df_pc["SW_STRESS_CORR"].min(), df_pc["SW_STRESS_CORR"].max())
 
             fig_pc = go.Figure()
 
-            for cls in df_pc["PoreType"].unique():
-                
-                group = df_pc[df_pc["PoreType"] == cls]
+            for cls in sorted(df_pc["PoreType"].dropna().unique()):
+
+                group = df_pc[df_pc["PoreType"] == cls].copy()
+
+                if len(group) < 5:
+                    continue
 
                 group = group.sort_values("SW_STRESS_CORR")
 
@@ -250,8 +283,147 @@ Output:
             fig_pc.update_layout(
                 xaxis_title="Water Saturation (Sw)",
                 yaxis_title="Capillary Pressure (Pc)",
-                yaxis=dict(type="log"),   # 关键（log轴）
+                yaxis=dict(
+                    type="log",
+                    tickvals=[1, 10, 100, 1000, 10000],
+                    ticktext=["1", "10", "100", "1000", "10000"],
+                ),
                 margin=dict(l=50, r=50, t=50, b=50)
             )
 
             st.plotly_chart(fig_pc, use_container_width=True)
+
+        # =========================
+        # Reservoir Classification Tabs
+        # =========================
+        st.markdown("---")
+        st.header("Reservoir Classification Methods")
+
+        tab1, tab2, tab3 = st.tabs(["FZI Method", "R35 Method", "Pittman Method"])
+        
+        # 统一散点样式
+        marker_style = dict(
+            size=5,
+            color=df_plot["PoreType"],
+            colorscale="Viridis",
+            opacity=0.7
+        )
+
+        phi = np.linspace(0.01, 0.4, 100)
+
+        with tab1:
+
+            st.subheader("FZI Method")
+
+            fig_fzi = go.Figure()
+
+            # Scatter
+            fig_fzi.add_trace(
+                go.Scatter(
+                    x=df_plot["CPOR_clean"],
+                    y=df_plot["CKH_clean"],
+                    mode="markers",
+                    marker=marker_style,
+                    name="Samples"
+                )
+            )
+
+            # FZI Lines
+            fzi_values = [0.2, 0.5, 1, 2, 5]
+
+            for fzi in fzi_values:
+                k = (fzi * phi / (1 - phi))**2
+                fig_fzi.add_trace(
+                    go.Scatter(
+                        x=phi,
+                        y=k,
+                        mode="lines",
+                        line=dict(color="black", dash="dot"),
+                        name=f"FZI={fzi}"
+                    )
+                )
+
+            fig_fzi.update_layout(
+                xaxis_title="Porosity (φ)",
+                yaxis_title="Permeability (k)",
+                yaxis=dict(type="log")
+            )
+
+            st.plotly_chart(fig_fzi, use_container_width=True)
+        
+        with tab2:
+
+            st.subheader("R35 Method")
+
+            fig_r35 = go.Figure()
+
+            fig_r35.add_trace(
+                go.Scatter(
+                    x=df_plot["CPOR_clean"],
+                    y=df_plot["CKH_clean"],
+                    mode="markers",
+                    marker=marker_style,
+                    name="Samples"
+                )
+            )
+
+            r35_values = [10, 50, 100, 500]
+
+            for r35 in r35_values:
+                ptr = r35 * phi / (1 - phi)
+                fig_r35.add_trace(
+                    go.Scatter(
+                        x=phi,
+                        y=ptr,
+                        mode="lines",
+                        line=dict(color="black", dash="dot"),
+                        name=f"R35={r35}"
+                    )
+                )
+
+            fig_r35.update_layout(
+                xaxis_title="Porosity (φ)",
+                yaxis_title="Pore Throat Radius (μm)",
+                yaxis=dict(type="log")
+            )
+
+            st.plotly_chart(fig_r35, use_container_width=True)
+        
+        with tab3:
+
+            st.subheader("Pittman Method")
+
+            fig_pittman = go.Figure()
+
+            fig_pittman.add_trace(
+                go.Scatter(
+                    x=df_plot["CPOR_clean"],
+                    y=df_plot["CKH_clean"],
+                    mode="markers",
+                    marker=marker_style,
+                    name="Samples"
+                )
+            )
+
+            pit_levels = [0.2, 0.5, 1, 2, 5, 10]
+
+            for p in pit_levels:
+                k = (phi**2.5) * (p * 50)
+
+                fig_pittman.add_trace(
+                    go.Scatter(
+                        x=phi,
+                        y=k,
+                        mode="lines",
+                        line=dict(color="black"),
+                        name=f"{p}"
+                    )
+                )
+
+            fig_pittman.update_layout(
+                xaxis_title="Porosity (φ)",
+                yaxis_title="Permeability (k)",
+                yaxis=dict(type="log")
+            )
+
+            st.plotly_chart(fig_pittman, use_container_width=True)

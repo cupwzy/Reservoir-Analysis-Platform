@@ -354,17 +354,6 @@ elif menu == "Multi-Well Analysis":
 
     st.plotly_chart(fig_prop, use_container_width=True)
 
-# Pore Typing（独立模块）
-elif menu == "Pore Typing":
-
-    st.header("Pore Typing (MICP + Machine Learning)")
-
-    st.info("MICP-based pore structure classification using Machine Learning")
-
-    st.markdown("---")
-
-    # 调用模块
-
 
 
 
