@@ -644,7 +644,7 @@ Output:
             st.plotly_chart(fig_r35, width="stretch")
 
             st.markdown("---")
-            st.header("RAC Analysis - R35 Overlay")
+            st.header("RCA Analysis - R35 Overlay")
 
             render_rca_panel(
                 df_plot,
@@ -747,7 +747,7 @@ Output:
             st.plotly_chart(fig_pit, width="stretch")
 
             st.markdown("---")
-            st.header("RAC Analysis - Pittman Overlay")
+            st.header("RCA Analysis - Pittman Overlay")
 
             render_rca_panel(
                 df_plot,
