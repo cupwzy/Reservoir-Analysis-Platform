@@ -31,25 +31,34 @@ def render_rca_panel(df_plot, rca_models, mode, key_prefix):
     # ===============================
     # RCA曲线
     # ===============================
+    def get_prt_curves(phi):
 
-    for t, params in rca_models.items():
+        phi = np.asarray(phi)
+        return {
+            "PRT1": 10 ** (7.38 * phi + 0.95),
+            "PRT2": 10 ** (9.8 * phi - 0.028),
+            "PRT3": 10 ** (8.41 * phi - 0.47),
+            "PRT4": 10 ** (3.5 * np.log10(phi) + 3.09),
+            "PRT5": 10 ** (18.03 * phi - 0.74),
+            "PRT6": 10 ** (18.35 * phi - 1.51),
+            "PRT7": 10 ** (3.48 * np.log10(phi) + 2.43),
+            "PRT8": np.full_like(phi, 0.01),
+        }
 
-        group = df_plot[df_plot["PoreType"] == t]
-        st.write(f"Type {t}, count={len(group)}")
-                
-        if len(group) < 3:   # ✅ 放宽条件
-                continue
+    phi_curve = np.linspace(0.01, 0.35, 200)
 
-        phi_min = group["CPOR_clean"].min()
-        phi_max = group["CPOR_clean"].max()
+    prt_curves = get_prt_curves(phi_curve)
 
-        if phi_min == phi_max:
-            continue
-
-        phi_curve = np.linspace(phi_min, phi_max, 100)
-
-        logk = params["b"] * phi_curve + params["a"]
-        k_curve = 10 ** logk
+    for name, k_curve in prt_curves.items():
+        fig_rca.add_trace(
+            go.Scatter(
+                x=phi_curve,
+                y=k_curve,
+                mode="lines",
+                line=dict(width=2),
+                name=name
+            )
+        )
 
         fig_rca.add_trace(
             go.Scatter(
@@ -88,11 +97,11 @@ def render_rca_panel(df_plot, rca_models, mode, key_prefix):
     elif mode == "R35":
 
         phi = np.linspace(0.01, 0.4, 200)
-        r35_values = [0.1, 0.5, 1, 2]
+        r35_values = [10, 50, 100, 500]
 
         for r35 in r35_values:
 
-            k = (r35**2) * (phi / (1 - phi))**2
+            k = r35 * phi / (1 - phi)
 
             fig_rca.add_trace(
                 go.Scatter(
@@ -106,19 +115,29 @@ def render_rca_panel(df_plot, rca_models, mode, key_prefix):
     # Pittman曲线叠加
     elif mode == "Pittman":
 
-        phi = np.linspace(0.01, 0.4, 200)
+        phi = np.linspace(0.01, 0.35, 200)
+        pit_levels = [0.2, 0.5, 1, 2, 5, 10]
 
-        for c in [0.1, 1, 10]:
+        k_mean = df_plot["CKH_clean"].median()
+        phi_mean = df_plot["CPOR_clean"].median()
 
-            k = c * (phi**4)
+        if phi_mean <= 0 or phi_mean >= 1:
+            phi_mean = 0.15
+
+        base = (phi_mean**3) / ((1 - phi_mean)**2)
+        scale = k_mean / base
+
+        for p in pit_levels:
+
+            k = scale * p * (phi**3) / ((1 - phi)**2)
 
             fig_rca.add_trace(
                 go.Scatter(
                     x=phi,
                     y=k,
                     mode="lines",
-                    line=dict(dash="dot"),
-                    name=f"Pittman {c}"
+                    line=dict(color="gray", width=1, dash="dot"),
+                    name=f"Pittman {p}"
                 )
             )
     # ===============================
@@ -499,8 +518,8 @@ Output:
             types = sorted(df_plot["FZI_Type"].dropna().unique())
 
             color_map = {
-                1: "blue", 2: "green", 3: "goldenrod", 4: "orange",
-                5: "red", 6: "purple", 7: "brown", 8: "black"
+                1: "blue", 2: "green", 3: "goldenrod", 4: "red",
+                5: "orange", 6: "purple", 7: "brown", 8: "black"
             }
 
             for t in types:
@@ -587,6 +606,16 @@ Output:
             fig.update_yaxes(showgrid=True, gridcolor="lightgray")
 
             st.plotly_chart(fig, width="stretch")
+            
+            st.markdown("---")
+            st.header("RAC Analysis - FZI Overlay")
+
+            render_rca_panel(
+                df_plot,
+                rca_models,
+                mode="FZI",
+                key_prefix="rca_fzi"
+            )
 
         with tab2:
 
@@ -654,6 +683,16 @@ Output:
             fig_r35.update_yaxes(showgrid=True, gridcolor="lightgray")
 
             st.plotly_chart(fig_r35, width="stretch")
+
+            st.markdown("---")
+            st.header("RAC Analysis - R35 Overlay")
+
+            render_rca_panel(
+                df_plot,
+                rca_models,
+                mode="R35",
+                key_prefix="rca_r35"
+            )
 
         with tab3:
 
@@ -747,17 +786,15 @@ Output:
                 legend=dict(title="Pore Type")
             )
             st.plotly_chart(fig_pit, width="stretch")
+
+            st.markdown("---")
+            st.header("RAC Analysis - Pittman Overlay")
+
+            render_rca_panel(
+                df_plot,
+                rca_models,
+                mode="Pittman",
+                key_prefix="rca_pittman"
+            )
         
-        # ===============================
-        # RCA
-        # ===============================
-
-        st.markdown("---")
-        st.header("RCA Analysis")
-
-        render_rca_panel(
-            df_plot,
-            rca_models,
-            mode="FZI",   # 选一个模式（通常FZI）
-            key_prefix="rca_main"
-        )
+    
