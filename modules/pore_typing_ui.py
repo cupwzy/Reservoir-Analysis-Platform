@@ -10,72 +10,67 @@ from modules.rac import prepare_rca_data, apply_fzi_typing, train_rca_model
 from modules.pc import (prepare_pc_data,generate_pc_curve)
 
 def render_rca_panel(df_plot, rca_models, mode, key_prefix):
-    
+
+    df_plot = df_plot.copy()
+
+    df_plot["CPOR_clean"] = pd.to_numeric(df_plot["CPOR_clean"], errors="coerce")
+    df_plot["CKH_clean"] = pd.to_numeric(df_plot["CKH_clean"], errors="coerce")
+
+    df_plot = df_plot[
+        (df_plot["CPOR_clean"] > 0) &
+        (df_plot["CPOR_clean"] < 1) &
+        (df_plot["CKH_clean"] > 0)
+    ].copy()
+
     fig_rca = go.Figure()
 
-    # ===============================
-    # 散点
-    # ===============================
-    for t in sorted(df_plot["PoreType"].unique()):
-        group = df_plot[df_plot["PoreType"] == t]
-        fig_rca.add_trace(
-            go.Scatter(
-                x=group["CPOR_clean"],
-                y=group["CKH_clean"],
-                mode="markers",
-                marker=dict(size=3, opacity=0.4),
-                name=f"Type {t}"
-            )
-        )
+    color_map = {
+        1: "blue", 2: "green", 3: "goldenrod", 4: "red",
+        5: "orange", 6: "purple", 7: "brown", 8: "black",
+    }
 
-    # ===============================
-    # Method曲线叠加
-    # ===============================
-    phi = np.linspace(0.01, 0.4, 200)
+    ymin = 10 ** -3
+    ymax = 10 ** 4
 
-    # FZI曲线叠加
+    # =====================================================
+    # 1. 分类（按当前方法）
+    # =====================================================
     if mode == "FZI":
 
-        phi = np.linspace(0.01, 0.4, 200)
-        fzi_values = [0.35, 0.8, 1.77, 4]
-
-        for fzi in fzi_values:
-
-            k = 1014 * (fzi**2) * (phi**3) / ((1 - phi)**2)
-
-            fig_rca.add_trace(
-                go.Scatter(
-                    x=phi,
-                    y=k,
-                    mode="lines",
-                    line=dict(color="gray", width=1, dash="dash"),
-                    name=f"FZI={fzi}"
-                )
+        if "FZI_Type" not in df_plot.columns:
+            df_plot["FZI"] = (
+                0.0314
+                * np.sqrt(df_plot["CKH_clean"] / df_plot["CPOR_clean"])
+                / (1 - df_plot["CPOR_clean"])
             )
-    # R35曲线叠加
+
+            fzi_bins = [0, 0.35, 0.8, 1.77, 4, np.inf]
+            fzi_labels = [1, 2, 3, 4, 5]
+
+            df_plot["FZI_Type"] = pd.cut(
+                df_plot["FZI"], bins=fzi_bins, labels=fzi_labels
+            )
+
+        class_col = "FZI_Type"
+
     elif mode == "R35":
 
-        phi = np.linspace(0.01, 0.4, 200)
-        r35_values = [10, 50, 100, 500]
+        df_plot["R35_equiv"] = (
+            df_plot["CKH_clean"]
+            * (1 - df_plot["CPOR_clean"])
+            / df_plot["CPOR_clean"]
+        )
 
-        for r35 in r35_values:
+        r35_bins = [0, 10, 50, 100, 500, np.inf]
+        r35_labels = [1, 2, 3, 4, 5]
 
-            k = r35 * phi / (1 - phi)
+        df_plot["R35_Type"] = pd.cut(
+            df_plot["R35_equiv"], bins=r35_bins, labels=r35_labels
+        )
 
-            fig_rca.add_trace(
-                go.Scatter(
-                    x=phi,
-                    y=k,
-                    mode="lines",
-                    line=dict(dash="dot"),
-                    name=f"R35={r35}"
-                )
-            )
-    # Pittman曲线叠加
+        class_col = "R35_Type"
+
     elif mode == "Pittman":
-
-        phi = np.linspace(0.01, 0.35, 200)
-        pit_levels = [0.2, 0.5, 1, 2, 5, 10]
 
         k_mean = df_plot["CKH_clean"].median()
         phi_mean = df_plot["CPOR_clean"].median()
@@ -83,51 +78,129 @@ def render_rca_panel(df_plot, rca_models, mode, key_prefix):
         if phi_mean <= 0 or phi_mean >= 1:
             phi_mean = 0.15
 
-        base = (phi_mean**3) / ((1 - phi_mean)**2)
-        scale = k_mean / base
+        base_mean = (phi_mean ** 3) / ((1 - phi_mean) ** 2)
+        scale = k_mean / base_mean
 
-        for p in pit_levels:
+        df_plot["Pittman_equiv"] = (
+            df_plot["CKH_clean"]
+            / (
+                scale
+                * (df_plot["CPOR_clean"] ** 3)
+                / ((1 - df_plot["CPOR_clean"]) ** 2)
+            )
+        )
 
-            k = scale * p * (phi**3) / ((1 - phi)**2)
+        pit_bins = [0, 0.2, 0.5, 1, 2, 5, 10, np.inf]
+        pit_labels = [1, 2, 3, 4, 5, 6, 7]
+
+        df_plot["Pittman_Type"] = pd.cut(
+            df_plot["Pittman_equiv"], bins=pit_bins, labels=pit_labels
+        )
+
+        class_col = "Pittman_Type"
+
+    else:
+        class_col = "PoreType"
+
+    df_plot = df_plot.dropna(subset=[class_col]).copy()
+    df_plot[class_col] = df_plot[class_col].astype(int)
+
+    # =====================================================
+    # 2. 散点
+    # =====================================================
+    for t in sorted(df_plot[class_col].unique()):
+        group = df_plot[df_plot[class_col] == t]
+
+        fig_rca.add_trace(
+            go.Scatter(
+                x=group["CPOR_clean"],
+                y=group["CKH_clean"],
+                mode="markers",
+                marker=dict(
+                    size=3,
+                    opacity=0.45,
+                    color=color_map.get(t, "gray")
+                ),
+                name=f"Type {t}"
+            )
+        )
+
+    # =====================================================
+    # 3. 边界曲线
+    # =====================================================
+    phi = np.linspace(0.01, 0.4, 200)
+    boundary_curves = []
+
+    if mode == "FZI":
+        for fzi in [0.35, 0.8, 1.77, 4]:
+            k = 1014 * (fzi ** 2) * (phi ** 3) / ((1 - phi) ** 2)
+            boundary_curves.append(k)
+            fig_rca.add_trace(go.Scatter(x=phi, y=k, mode="lines"))
+
+    elif mode == "R35":
+        for r35 in [10, 50, 100, 500]:
+            k = r35 * phi / (1 - phi)
+            boundary_curves.append(k)
+            fig_rca.add_trace(go.Scatter(x=phi, y=k, mode="lines"))
+
+    elif mode == "Pittman":
+        for p in [0.2, 0.5, 1, 2, 5, 10]:
+            k = scale * p * (phi ** 3) / ((1 - phi) ** 2)
+            boundary_curves.append(k)
+            fig_rca.add_trace(go.Scatter(x=phi, y=k, mode="lines"))
+
+    # =====================================================
+    # 4. 拟合（关键亮点🔥）
+    # =====================================================
+    if boundary_curves:
+
+        edge_curves = (
+            [np.full_like(phi, ymin)]
+            + boundary_curves
+            + [np.full_like(phi, ymax)]
+        )
+
+        for t in sorted(df_plot[class_col].unique()):
+
+            group = df_plot[df_plot[class_col] == t]
+
+            if len(group) < 5:
+                continue
+
+            x = group["CPOR_clean"]
+            y = np.log10(group["CKH_clean"])
+
+            b, a = np.polyfit(x, y, 1)
+
+            phi_fit = np.linspace(x.min(), x.max(), 100)
+            k_fit = 10 ** (b * phi_fit + a)
+
+            lower = np.interp(phi_fit, phi, edge_curves[t - 1])
+            upper = np.interp(phi_fit, phi, edge_curves[t])
+
+            k_fit = np.clip(k_fit, lower, upper)
 
             fig_rca.add_trace(
                 go.Scatter(
-                    x=phi,
-                    y=k,
+                    x=phi_fit,
+                    y=k_fit,
                     mode="lines",
-                    line=dict(color="gray", width=1, dash="dot"),
-                    name=f"Pittman {p}"
+                    line=dict(width=3),
+                    name=f"Type {t} fit"
                 )
             )
-    # ===============================
-    # Prediction点 当前选择高亮
-    # ===============================
-    phi_input = st.session_state.get("phi_input", 0.2)
-    type_input = st.session_state.get("type_input", list(rca_models.keys())[0])
 
-    params = rca_models[type_input]
-    k_pred = 10 ** (params["b"] * phi_input + params["a"])
-
-    fig_rca.add_trace(
-        go.Scatter(
-            x=[phi_input],
-            y=[k_pred],
-            mode="markers",
-            marker=dict(size=10, color="black"),
-            name="Prediction",
-        )
-    )
-    # Layout
+    # =====================================================
+    # 5. Layout
+    # =====================================================
     fig_rca.update_layout(
-        xaxis_title="CPOR_clean (v/v)",
-        yaxis_title="CKH_clean (mD)",
-        yaxis=dict(type="log"),
+        xaxis_title="CPOR_clean",
+        yaxis_title="CKH_clean",
+        yaxis=dict(type="log", range=[-3, 4]),
         xaxis=dict(range=[0, 0.4])
     )
 
     st.plotly_chart(fig_rca, width="stretch")
-    # 输出预测
-    st.success(f"Predicted k = {k_pred:.2f} mD")
 
 def run():
 
