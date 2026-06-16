@@ -29,47 +29,6 @@ def render_rca_panel(df_plot, rca_models, mode, key_prefix):
         )
 
     # ===============================
-    # RCA曲线
-    # ===============================
-    def get_prt_curves(phi):
-
-        phi = np.asarray(phi)
-        return {
-            "PRT1": 10 ** (7.38 * phi + 0.95),
-            "PRT2": 10 ** (9.8 * phi - 0.028),
-            "PRT3": 10 ** (8.41 * phi - 0.47),
-            "PRT4": 10 ** (3.5 * np.log10(phi) + 3.09),
-            "PRT5": 10 ** (18.03 * phi - 0.74),
-            "PRT6": 10 ** (18.35 * phi - 1.51),
-            "PRT7": 10 ** (3.48 * np.log10(phi) + 2.43),
-            "PRT8": np.full_like(phi, 0.01),
-        }
-
-    phi_curve = np.linspace(0.01, 0.35, 200)
-
-    prt_curves = get_prt_curves(phi_curve)
-
-    for name, k_curve in prt_curves.items():
-        fig_rca.add_trace(
-            go.Scatter(
-                x=phi_curve,
-                y=k_curve,
-                mode="lines",
-                line=dict(width=2),
-                name=name
-            )
-        )
-
-        fig_rca.add_trace(
-            go.Scatter(
-                x=phi_curve,
-                y=k_curve,
-                mode="lines",
-                name=f"Type {t}"
-            )
-        )
-    
-    # ===============================
     # Method曲线叠加
     # ===============================
     phi = np.linspace(0.01, 0.4, 200)
@@ -608,7 +567,7 @@ Output:
             st.plotly_chart(fig, width="stretch")
             
             st.markdown("---")
-            st.header("RAC Analysis - FZI Overlay")
+            st.header("RCA Analysis - FZI Overlay")
 
             render_rca_panel(
                 df_plot,
