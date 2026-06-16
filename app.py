@@ -6,6 +6,7 @@ from modules.uploader import load_master_table
 from modules.mapping import plot_well_map
 from modules.well_data import load_and_merge_well_data
 from modules import pore_typing_ui
+from modules import autonomous_pore_typing_ui
 
 # ===============================
 # 页面配置
@@ -21,12 +22,16 @@ menu = st.sidebar.radio(
         "Home",
         "Well Map",
         "Multi-Well Analysis", 
-        "Pore Typing"
+        "Pore Typing",
+        "Autonomous Pore Typing"
     ]
 )
 
 if menu == "Pore Typing":
     pore_typing_ui.run()
+
+if menu == "Autonomous Pore Typing":
+    autonomous_pore_typing_ui.run()
 
 # ===============================
 # Session State
@@ -353,8 +358,5 @@ elif menu == "Multi-Well Analysis":
     )
 
     st.plotly_chart(fig_prop, use_container_width=True)
-
-
-
 
 
