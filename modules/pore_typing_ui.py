@@ -1,12 +1,15 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
 import os
+import plotly.graph_objects as go
 import plotly.express as px
+
 from modules.pore_model import load_model_by_name
-from modules.rac import train_rca_model, predict_k
-def render_rca_panel(df_plot, rca_models, key_prefix):
+from modules.rac import prepare_rca_data, apply_fzi_typing, train_rca_model
+from modules.pc import (prepare_pc_data,generate_pc_curve)
+
+def render_rca_panel(df_plot, rca_models, mode, key_prefix):
     
     fig_rca = go.Figure()
 
@@ -15,7 +18,6 @@ def render_rca_panel(df_plot, rca_models, key_prefix):
     # ===============================
     for t in sorted(df_plot["PoreType"].unique()):
         group = df_plot[df_plot["PoreType"] == t]
-
         fig_rca.add_trace(
             go.Scatter(
                 x=group["CPOR_clean"],
@@ -29,10 +31,22 @@ def render_rca_panel(df_plot, rca_models, key_prefix):
     # ===============================
     # RCA曲线
     # ===============================
-    
-    phi_curve = np.linspace(0.01, 0.4, 200)
 
     for t, params in rca_models.items():
+
+        group = df_plot[df_plot["PoreType"] == t]
+        st.write(f"Type {t}, count={len(group)}")
+                
+        if len(group) < 3:   # ✅ 放宽条件
+                continue
+
+        phi_min = group["CPOR_clean"].min()
+        phi_max = group["CPOR_clean"].max()
+
+        if phi_min == phi_max:
+            continue
+
+        phi_curve = np.linspace(phi_min, phi_max, 100)
 
         logk = params["b"] * phi_curve + params["a"]
         k_curve = 10 ** logk
@@ -42,16 +56,77 @@ def render_rca_panel(df_plot, rca_models, key_prefix):
                 x=phi_curve,
                 y=k_curve,
                 mode="lines",
-                line=dict(width=2),
                 name=f"Type {t}"
             )
         )
+    
+    # ===============================
+    # Method曲线叠加
+    # ===============================
+    phi = np.linspace(0.01, 0.4, 200)
 
+    # FZI曲线叠加
+    if mode == "FZI":
+
+        phi = np.linspace(0.01, 0.4, 200)
+        fzi_values = [0.35, 0.8, 1.77, 4]
+
+        for fzi in fzi_values:
+
+            k = 1014 * (fzi**2) * (phi**3) / ((1 - phi)**2)
+
+            fig_rca.add_trace(
+                go.Scatter(
+                    x=phi,
+                    y=k,
+                    mode="lines",
+                    line=dict(color="gray", width=1, dash="dash"),
+                    name=f"FZI={fzi}"
+                )
+            )
+    # R35曲线叠加
+    elif mode == "R35":
+
+        phi = np.linspace(0.01, 0.4, 200)
+        r35_values = [0.1, 0.5, 1, 2]
+
+        for r35 in r35_values:
+
+            k = (r35**2) * (phi / (1 - phi))**2
+
+            fig_rca.add_trace(
+                go.Scatter(
+                    x=phi,
+                    y=k,
+                    mode="lines",
+                    line=dict(dash="dot"),
+                    name=f"R35={r35}"
+                )
+            )
+    # Pittman曲线叠加
+    elif mode == "Pittman":
+
+        phi = np.linspace(0.01, 0.4, 200)
+
+        for c in [0.1, 1, 10]:
+
+            k = c * (phi**4)
+
+            fig_rca.add_trace(
+                go.Scatter(
+                    x=phi,
+                    y=k,
+                    mode="lines",
+                    line=dict(dash="dot"),
+                    name=f"Pittman {c}"
+                )
+            )
     # ===============================
     # Prediction点 当前选择高亮
     # ===============================
-    phi_input = st.session_state["phi_input"]
-    type_input = st.session_state["type_input"]
+    phi_input = st.session_state.get("phi_input", 0.2)
+    type_input = st.session_state.get("type_input", list(rca_models.keys())[0])
+
     params = rca_models[type_input]
     k_pred = 10 ** (params["b"] * phi_input + params["a"])
 
@@ -64,7 +139,7 @@ def render_rca_panel(df_plot, rca_models, key_prefix):
             name="Prediction",
         )
     )
-
+    # Layout
     fig_rca.update_layout(
         xaxis_title="CPOR_clean (v/v)",
         yaxis_title="CKH_clean (mD)",
@@ -72,12 +147,7 @@ def render_rca_panel(df_plot, rca_models, key_prefix):
         xaxis=dict(range=[0, 0.4])
     )
 
-    st.plotly_chart(
-        fig_rca,
-        use_container_width=True,
-        key=f"rca_chart_{key_prefix}"
-    )
-
+    st.plotly_chart(fig_rca, width="stretch")
     # 输出预测
     st.success(f"Predicted k = {k_pred:.2f} mD")
 
@@ -374,10 +444,22 @@ Output:
         # =========================
         st.markdown("---")
         st.header("Reservoir Classification Methods")
+        
+        df_plot = df.copy()
+
+        # RCA数据处理
+        df_plot = prepare_rca_data(df_plot)
+        df_plot = apply_fzi_typing(df_plot)
+
+        if len(df_plot) == 0:
+            st.error("No valid data after cleaning")
+            return
+
         # ===============================
         # RCA模型（全局）
         # ===============================
         rca_models = train_rca_model(df_plot)
+
         # ===============================
         # RCA全局输入
         # ===============================
@@ -400,24 +482,10 @@ Output:
                 options=sorted(rca_models.keys()),
                 index=0
             )
-
+        # ===============================
+        # Tabs 控制
+        # ===============================
         tab1, tab2, tab3 = st.tabs(["FZI Method", "R35 Method", "Pittman Method"])
-        
-        # 统一散点样式
-        marker_style = dict(
-            size=5,
-            color=df_plot["PoreType"],
-            colorscale="Viridis",
-            opacity=0.7
-        )
-
-        phi = np.linspace(0.01, 0.4, 100)
-        
-        # ===============================
-        # 数据过滤
-        # ===============================
-        df_plot = df_plot[df_plot["CKH_clean"] > 0]
-        df_plot = df_plot[df_plot["CPOR_clean"] > 0]
 
         with tab1:
 
@@ -518,8 +586,7 @@ Output:
             fig.update_xaxes(showgrid=True, gridcolor="lightgray")
             fig.update_yaxes(showgrid=True, gridcolor="lightgray")
 
-            st.plotly_chart(fig, use_container_width=True)
-            render_rca_panel(df_plot, rca_models, key_prefix="tab1")
+            st.plotly_chart(fig, width="stretch")
 
         with tab2:
 
@@ -586,8 +653,7 @@ Output:
             fig_r35.update_xaxes(showgrid=True, gridcolor="lightgray")
             fig_r35.update_yaxes(showgrid=True, gridcolor="lightgray")
 
-            st.plotly_chart(fig_r35, use_container_width=True)
-            render_rca_panel(df_plot, rca_models, key_prefix="tab2")
+            st.plotly_chart(fig_r35, width="stretch")
 
         with tab3:
 
@@ -680,11 +746,18 @@ Output:
                 plot_bgcolor="white",
                 legend=dict(title="Pore Type")
             )
-
-            fig_pit.update_xaxes(showgrid=True, gridcolor="lightgray")
-            fig_pit.update_yaxes(showgrid=True, gridcolor="lightgray")
-
-            st.plotly_chart(fig_pit, use_container_width=True)
-            render_rca_panel(df_plot, rca_models, key_prefix="tab3")
+            st.plotly_chart(fig_pit, width="stretch")
         
+        # ===============================
+        # RCA
+        # ===============================
 
+        st.markdown("---")
+        st.header("RCA Analysis")
+
+        render_rca_panel(
+            df_plot,
+            rca_models,
+            mode="FZI",   # 选一个模式（通常FZI）
+            key_prefix="rca_main"
+        )
