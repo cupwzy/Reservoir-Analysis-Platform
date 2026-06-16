@@ -174,7 +174,7 @@ def train_model():
 
     joblib.dump(model, model_path)
 
-    # ✅ 更新 latest
+    # 更新 latest
     joblib.dump(model, "models/rf_model_latest.pkl")
 
     print(f"\n✅ Model saved: {model_path}")
