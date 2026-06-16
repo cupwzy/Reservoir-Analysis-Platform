@@ -512,28 +512,6 @@ Output:
         rca_models = train_rca_model(df_plot)
 
         # ===============================
-        # RCA全局输入
-        # ===============================
-        st.subheader("RCA Prediction Control")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.session_state["phi_input"] = st.number_input(
-                "Input Porosity (v/v)",
-                min_value=0.01,
-                max_value=0.4,
-                value=st.session_state.get("phi_input", 0.15),
-                step=0.01
-            )
-
-        with col2:
-            st.session_state["type_input"] = st.selectbox(
-                "Select Pore Type",
-                options=sorted(rca_models.keys()),
-                index=0
-            )
-        # ===============================
         # Tabs 控制
         # ===============================
         tab1, tab2, tab3 = st.tabs(["FZI Method", "R35 Method", "Pittman Method"])
