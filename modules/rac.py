@@ -72,18 +72,16 @@ def prepare_rca_data(df):
 
     return df
 def apply_fzi_typing(df):
-
     df = df.copy()
 
     df["FZI"] = 0.0314 * np.sqrt(df["CKH_clean"] / df["CPOR_clean"]) / (1 - df["CPOR_clean"])
 
     bins = [0, 0.35, 0.8, 1.77, 4, 10]
     labels = [1, 2, 3, 4, 5]
+    df["RF_PoreType"] = df["PoreType"]
+    df["FZI_Type"] = pd.cut(df["FZI"], bins=bins, labels=labels)
 
-    df["PoreType"] = pd.cut(df["FZI"], bins=bins, labels=labels)
-
-    df = df.dropna(subset=["PoreType"])
-    df["PoreType"] = df["PoreType"].astype(int)
+    df = df.dropna(subset=["FZI_Type"])
+    df["FZI_Type"] = df["FZI_Type"].astype(int)
 
     return df
-print("✅ rac.py loaded")

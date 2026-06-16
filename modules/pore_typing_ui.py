@@ -496,7 +496,7 @@ Output:
             # ===============================
             # 散点（按Type）
             # ===============================
-            types = sorted(df_plot["PoreType"].dropna().unique())
+            types = sorted(df_plot["FZI_Type"].dropna().unique())
 
             color_map = {
                 1: "blue", 2: "green", 3: "goldenrod", 4: "orange",
@@ -504,7 +504,7 @@ Output:
             }
 
             for t in types:
-                group = df_plot[df_plot["PoreType"] == t]
+                group = df_plot[df_plot["FZI_Type"] == t]
 
                 fig.add_trace(
                     go.Scatter(
