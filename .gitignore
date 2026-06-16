@@ -2,7 +2,7 @@
 data/
 outputs/
 logs/
-modules/*.pkl
+models/*.pkl
 
 *.log
 
