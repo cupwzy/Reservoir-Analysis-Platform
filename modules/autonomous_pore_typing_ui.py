@@ -26,12 +26,36 @@ COLOR_MAP = {
     8: "black",
 }
 
+SCATTER_MARKER_SIZE = 4
+FEATURE_MARKER_SIZE = 6
+CURVE_INTERPOLATION_POINTS = 160
+CARBONATE_PC_SATURATIONS = [0.10, 0.25, 0.50, 0.75, 0.90]
+PORE_RADIUS_BINS = 40
+
 
 def _find_sample_col(df):
+    ranked_candidates = []
+
     for col in SAMPLE_ID_CANDIDATES:
-        if col in df.columns:
-            return col
-    return None
+        if col not in df.columns:
+            continue
+
+        values = df[col].dropna()
+        if values.empty:
+            continue
+
+        group_sizes = df.dropna(subset=[col]).groupby(col).size()
+        valid_curve_groups = int((group_sizes >= 2).sum())
+        unique_count = int(values.nunique())
+
+        if unique_count > 1:
+            ranked_candidates.append((valid_curve_groups, unique_count, col))
+
+    if not ranked_candidates:
+        return None
+
+    ranked_candidates.sort(reverse=True)
+    return ranked_candidates[0][2]
 
 
 def _clean_input(df):
@@ -69,7 +93,7 @@ def _add_petrophysical_features(df):
 
     df["logK"] = np.log10(k)
     df["logPc"] = np.log10(df["PC_STRESS_CORR"])
-    df["FZI"] = 0.0314 * np.sqrt(k / phi) / (1 - phi)
+    df["FZI"] = 0.0314 * np.sqrt(k / phi) * (1 - phi) / phi
     df["logFZI"] = np.log10(df["FZI"])
     df["R35_equiv"] = k * (1 - phi) / phi
     df["logR35_equiv"] = np.log10(df["R35_equiv"])
@@ -78,6 +102,55 @@ def _add_petrophysical_features(df):
         df["logPTR"] = np.where(df["PTR_P"] > 0, np.log10(df["PTR_P"]), np.nan)
 
     return df
+
+
+def _carbonate_capillary_shape_metrics(group):
+    curve = (
+        group[["SW_STRESS_CORR", "logPc"]]
+        .dropna()
+        .groupby("SW_STRESS_CORR", as_index=False)["logPc"]
+        .median()
+        .sort_values("SW_STRESS_CORR")
+    )
+
+    metric_names = [
+        "Pc_log_at_sw_10",
+        "Pc_log_at_sw_25",
+        "Pc_log_at_sw_50",
+        "Pc_log_at_sw_75",
+        "Pc_log_at_sw_90",
+        "Pc_log_span",
+        "Pc_log_entry_to_tail",
+        "Pc_slope_entry",
+        "Pc_slope_middle",
+        "Pc_slope_tail",
+        "Pc_slope_complexity",
+    ]
+
+    if len(curve) < 2:
+        return pd.Series({name: np.nan for name in metric_names})
+
+    sw = curve["SW_STRESS_CORR"].to_numpy()
+    log_pc = curve["logPc"].to_numpy()
+    pc_at_sw = {
+        f"Pc_log_at_sw_{int(s * 100):02d}": np.interp(s, sw, log_pc)
+        for s in CARBONATE_PC_SATURATIONS
+    }
+
+    slopes = np.diff(log_pc) / np.diff(sw)
+    slopes = slopes[np.isfinite(slopes)]
+
+    metrics = {
+        **pc_at_sw,
+        "Pc_log_span": np.nanmax(log_pc) - np.nanmin(log_pc),
+        "Pc_log_entry_to_tail": pc_at_sw["Pc_log_at_sw_10"] - pc_at_sw["Pc_log_at_sw_90"],
+        "Pc_slope_entry": (pc_at_sw["Pc_log_at_sw_25"] - pc_at_sw["Pc_log_at_sw_10"]) / 0.15,
+        "Pc_slope_middle": (pc_at_sw["Pc_log_at_sw_75"] - pc_at_sw["Pc_log_at_sw_25"]) / 0.50,
+        "Pc_slope_tail": (pc_at_sw["Pc_log_at_sw_90"] - pc_at_sw["Pc_log_at_sw_75"]) / 0.15,
+        "Pc_slope_complexity": np.nanstd(slopes) if len(slopes) else 0.0,
+    }
+
+    return pd.Series(metrics)
 
 
 def _build_sample_feature_table(df, sample_col):
@@ -112,6 +185,13 @@ def _build_sample_feature_table(df, sample_col):
     ]
     sample_features = sample_features.reset_index()
 
+    carbonate_shape_metrics = (
+        df.groupby(sample_col)
+        .apply(_carbonate_capillary_shape_metrics)
+        .reset_index()
+    )
+    sample_features = sample_features.merge(carbonate_shape_metrics, on=sample_col, how="left")
+
     feature_cols = [
         "CPOR_clean_median",
         "logK_median",
@@ -119,6 +199,17 @@ def _build_sample_feature_table(df, sample_col):
         "logR35_equiv_median",
         "logPc_median",
         "logPc_max",
+        "Pc_log_at_sw_10",
+        "Pc_log_at_sw_25",
+        "Pc_log_at_sw_50",
+        "Pc_log_at_sw_75",
+        "Pc_log_at_sw_90",
+        "Pc_log_span",
+        "Pc_log_entry_to_tail",
+        "Pc_slope_entry",
+        "Pc_slope_middle",
+        "Pc_slope_tail",
+        "Pc_slope_complexity",
         "SW_STRESS_CORR_min",
         "SW_STRESS_CORR_median",
         "SW_STRESS_CORR_max",
@@ -129,7 +220,17 @@ def _build_sample_feature_table(df, sample_col):
     if "PORE_V_P_median" in sample_features.columns:
         feature_cols.append("PORE_V_P_median")
 
+    total_sample_count = len(sample_features)
     sample_features = sample_features.dropna(subset=feature_cols).copy()
+    if len(sample_features) < 2:
+        raise ValueError(
+            "At least two valid samples are required for autonomous classification. "
+            f"The selected sample identifier is `{sample_col}`. "
+            f"{len(sample_features)} of {total_sample_count} grouped samples remain valid "
+            "after carbonate capillary-curve feature extraction. Check that the sample "
+            "identifier separates cores/plugs rather than only wells, and that each sample "
+            "has at least two valid capillary-pressure points."
+        )
 
     return sample_features, sample_col, feature_cols
 
@@ -137,7 +238,10 @@ def _build_sample_feature_table(df, sample_col):
 def _cluster_samples(sample_features, feature_cols, n_clusters, random_state):
     n_clusters = int(min(n_clusters, len(sample_features)))
     if n_clusters < 2:
-        raise ValueError("At least two valid samples are required for autonomous classification.")
+        raise ValueError(
+            f"At least two valid samples are required for autonomous classification; "
+            f"only {len(sample_features)} valid sample is available."
+        )
 
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(sample_features[feature_cols])
@@ -178,29 +282,110 @@ def _assign_types_to_rows(df, sample_features, sample_col):
     return typed
 
 
-def _plot_capillary_curves(df):
+def _plot_capillary_curves(df, sample_col=None):
     fig = go.Figure()
 
     for t in sorted(df["AutoPoreType"].dropna().unique()):
         group = df[df["AutoPoreType"] == t].copy()
-        group = group.sort_values("SW_STRESS_CORR")
+        color = COLOR_MAP.get(int(t), "gray")
 
-        fig.add_trace(
-            go.Scatter(
-                x=group["SW_STRESS_CORR"],
-                y=group["PC_STRESS_CORR"],
-                mode="lines+markers",
-                marker=dict(size=4, color=COLOR_MAP.get(int(t), "gray"), opacity=0.55),
-                line=dict(width=2, color=COLOR_MAP.get(int(t), "gray")),
-                name=f"Type {int(t)}"
+        if sample_col in group.columns:
+            sample_groups = group.groupby(sample_col, dropna=False)
+        else:
+            sample_groups = [(None, group)]
+
+        for i, (_, sample_group) in enumerate(sample_groups):
+            sample_curve = (
+                sample_group[["SW_STRESS_CORR", "PC_STRESS_CORR"]]
+                .dropna()
+                .groupby("SW_STRESS_CORR", as_index=False)["PC_STRESS_CORR"]
+                .median()
+                .sort_values("SW_STRESS_CORR")
             )
-        )
+            if len(sample_curve) < 2:
+                continue
+
+            x = sample_curve["SW_STRESS_CORR"].to_numpy()
+            y_log = np.log10(sample_curve["PC_STRESS_CORR"].to_numpy())
+            x_smooth = np.linspace(x.min(), x.max(), CURVE_INTERPOLATION_POINTS)
+            y_smooth = 10 ** np.interp(x_smooth, x, y_log)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=x_smooth,
+                    y=y_smooth,
+                    mode="lines",
+                    line=dict(width=1, color=color),
+                    name=f"Type {int(t)}",
+                    legendgroup=f"Type {int(t)}",
+                    showlegend=(i == 0)
+                )
+            )
 
     fig.update_layout(
         title="Mercury Injection Capillary Pressure Curves by Autonomous Pore Type",
         xaxis_title="Water Saturation / Mercury Saturation Proxy (fraction)",
         yaxis_title="Capillary Pressure (Pc)",
         yaxis=dict(type="log"),
+        plot_bgcolor="white",
+        legend=dict(title="Auto Type")
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="lightgray")
+    fig.update_yaxes(showgrid=True, gridcolor="lightgray")
+
+    return fig
+
+
+def _plot_pore_throat_radius_distribution(df):
+    if "PTR_P" not in df.columns:
+        return None
+
+    valid = df[(df["PTR_P"] > 0) & df["AutoPoreType"].notna()].copy()
+    if valid.empty:
+        return None
+
+    radius_min = valid["PTR_P"].min()
+    radius_max = valid["PTR_P"].max()
+    if radius_min == radius_max:
+        radius_min *= 0.95
+        radius_max *= 1.05
+
+    bins = np.logspace(np.log10(radius_min), np.log10(radius_max), PORE_RADIUS_BINS + 1)
+    centers = 10 ** ((np.log10(bins[:-1]) + np.log10(bins[1:])) / 2)
+    use_pore_volume = "PORE_V_P" in valid.columns and valid["PORE_V_P"].fillna(0).gt(0).any()
+
+    fig = go.Figure()
+
+    for t in sorted(valid["AutoPoreType"].dropna().unique()):
+        group = valid[valid["AutoPoreType"] == t].copy()
+        color = COLOR_MAP.get(int(t), "gray")
+
+        if use_pore_volume:
+            weights = group["PORE_V_P"].where(group["PORE_V_P"] > 0, 0).fillna(0).to_numpy()
+        else:
+            weights = np.ones(len(group))
+
+        hist, _ = np.histogram(group["PTR_P"].to_numpy(), bins=bins, weights=weights)
+        total = hist.sum()
+        if total <= 0:
+            continue
+
+        fig.add_trace(
+            go.Scatter(
+                x=centers,
+                y=hist / total,
+                mode="lines",
+                line=dict(width=2, color=color),
+                name=f"Type {int(t)}"
+            )
+        )
+
+    fig.update_layout(
+        title="Carbonate Pore Throat Radius Distribution by Autonomous Pore Type",
+        xaxis_title="Pore throat radius (PTR_P)",
+        yaxis_title="Proportion of total pore throat contribution",
+        xaxis=dict(type="log"),
+        yaxis=dict(tickformat=".0%"),
         plot_bgcolor="white",
         legend=dict(title="Auto Type")
     )
@@ -222,7 +407,7 @@ def _plot_poroperm(df):
                 x=group["CPOR_clean"],
                 y=group["CKH_clean"],
                 mode="markers",
-                marker=dict(size=5, color=color, opacity=0.55),
+                marker=dict(size=SCATTER_MARKER_SIZE, color=color, opacity=0.45),
                 name=f"Type {int(t)}"
             )
         )
@@ -278,7 +463,7 @@ def _plot_class_controlled_fzi(df):
                 x=group["CPOR_clean"],
                 y=group["CKH_clean"],
                 mode="markers",
-                marker=dict(size=5, color=color, opacity=0.5),
+                marker=dict(size=SCATTER_MARKER_SIZE, color=color, opacity=0.42),
                 name=f"Type {int(t)}"
             )
         )
@@ -325,7 +510,7 @@ def _plot_feature_space(sample_features):
                 x=group["PCA1"],
                 y=group["PCA2"],
                 mode="markers",
-                marker=dict(size=8, color=COLOR_MAP.get(int(t), "gray"), opacity=0.75),
+                marker=dict(size=FEATURE_MARKER_SIZE, color=COLOR_MAP.get(int(t), "gray"), opacity=0.65),
                 name=f"Type {int(t)}"
             )
         )
@@ -362,12 +547,13 @@ def _summary_table(df):
 
 
 def run():
-    st.header("Autonomous Pore Throat Classification")
+    st.header("Autonomous Carbonate Pore Throat Classification")
 
     st.info(
-        "This module classifies unlabelled pore throat data using porosity-permeability "
-        "and mercury-injection capillary-pressure features. The resulting autonomous "
-        "types are then used to generate class-controlled FZI curves."
+        "Carbonate-focused version: this module classifies unlabelled pore throat data "
+        "using porosity-permeability features plus mercury-injection capillary-pressure "
+        "curve morphology. The added carbonate morphology indicators capture entry, "
+        "middle, tail, span, and curve-complexity behavior."
     )
 
     st.markdown("""
@@ -379,7 +565,7 @@ def run():
 
     Optional columns:
     - `PTR_P`: pore throat radius
-    - `PORE_V_P`: pore volume
+    - `PORE_V_P`: pore volume, used as the weight for pore throat radius distribution when available
     - sample identifier, such as `SampleID`, `Plug`, `wellName`, or `Well`
     """)
 
@@ -414,6 +600,9 @@ def run():
         return
 
     sample_col = _find_sample_col(df)
+    if sample_col is None:
+        df["__SampleKey"] = np.arange(len(df))
+        sample_col = "__SampleKey"
 
     with st.sidebar:
         st.markdown("### Autonomous Classification Settings")
@@ -473,27 +662,40 @@ def run():
         mime="text/csv"
     )
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "Capillary Pressure Curves",
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "Carbonate Capillary Pressure Curves",
+        "Pore Throat Radius Distribution",
         "Porosity-Permeability Plot",
         "Classification-Controlled FZI",
         "Feature Space"
     ])
 
     with tab1:
-        st.plotly_chart(_plot_capillary_curves(df_classified), use_container_width=True)
+        st.plotly_chart(_plot_capillary_curves(df_classified, sample_col), use_container_width=True)
+        st.caption(
+            "Carbonate version: each sample is drawn as a continuous log-Pc interpolated curve. "
+            "The classification includes capillary-pressure shape metrics such as entry/tail "
+            "pressure, curve span, segment slopes, and slope complexity."
+        )
 
     with tab2:
-        st.plotly_chart(_plot_poroperm(df_classified), use_container_width=True)
+        radius_fig = _plot_pore_throat_radius_distribution(df_classified)
+        if radius_fig is not None:
+            st.plotly_chart(radius_fig, use_container_width=True)
+        else:
+            st.warning("PTR_P is required to draw the pore throat radius distribution.")
 
     with tab3:
+        st.plotly_chart(_plot_poroperm(df_classified), use_container_width=True)
+
+    with tab4:
         st.plotly_chart(_plot_class_controlled_fzi(df_classified), use_container_width=True)
         st.caption(
             "The FZI curves in this panel are controlled by the autonomous classification: "
             "each curve uses the median FZI of its classified pore type."
         )
 
-    with tab4:
+    with tab5:
         feature_fig = _plot_feature_space(sample_features)
         if feature_fig is not None:
             st.plotly_chart(feature_fig, use_container_width=True)

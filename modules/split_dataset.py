@@ -1,116 +1,135 @@
+import os
+
 import pandas as pd
 from sklearn.model_selection import train_test_split
-import os
+
+
+FEATURE_COLS = [
+    "CKH_clean",
+    "CPOR_clean",
+    "PTR_P",
+    "PC_STRESS_CORR",
+    "SW_STRESS_CORR",
+]
+
+OPTIONAL_COLS = [
+    "PORE_V_P",
+    "wellName",
+    "WellName_2",
+    "Plug No",
+    "ID",
+    "ReferenceName",
+]
+
+
+def _first_available_column(df, candidates):
+    for col in candidates:
+        if col in df.columns and df[col].notna().any():
+            return col
+    return None
+
+
+def _build_core_id(df):
+    df = df.copy()
+
+    if {"WellName_2", "Plug No"}.issubset(df.columns):
+        well = df["WellName_2"].astype(str).str.strip()
+        plug = df["Plug No"].astype(str).str.strip()
+        df["Core_ID"] = well + "_" + plug
+        return df
+
+    core_col = _first_available_column(
+        df,
+        ["Core_ID", "SampleID", "Sample_ID", "Sample", "Plug", "Plug_ID", "ID", "ReferenceName"],
+    )
+    if core_col is None:
+        raise ValueError(
+            "No core/plug identifier column found. Add WellName_2 + Plug No, Core_ID, "
+            "SampleID, Plug_ID, ID, or ReferenceName before splitting."
+        )
+
+    df["Core_ID"] = df[core_col].astype(str).str.strip()
+    return df
+
+
+def _split_by_core(df):
+    core_labels = (
+        df.groupby("Core_ID", as_index=False)
+        .agg(Label=("Label", lambda s: s.mode().iat[0]))
+    )
+
+    train_cores, temp_cores = train_test_split(
+        core_labels,
+        test_size=0.3,
+        random_state=42,
+        stratify=core_labels["Label"],
+    )
+
+    val_cores, test_cores = train_test_split(
+        temp_cores,
+        test_size=0.5,
+        random_state=42,
+        stratify=temp_cores["Label"],
+    )
+
+    train_ids = set(train_cores["Core_ID"])
+    val_ids = set(val_cores["Core_ID"])
+    test_ids = set(test_cores["Core_ID"])
+
+    df_train = df[df["Core_ID"].isin(train_ids)].copy()
+    df_val = df[df["Core_ID"].isin(val_ids)].copy()
+    df_test = df[df["Core_ID"].isin(test_ids)].copy()
+
+    return df_train, df_val, df_test
 
 
 def split_data(file_path):
-
-    # ===============================
-    # 1. 读取数据
-    # ===============================
     df = pd.read_excel(file_path, skiprows=[1])
+    print(f"Raw data shape: {df.shape}")
 
-    print(f"✅ Raw data shape: {df.shape}")
-
-    # ===============================
-    # 2. 标签处理
-    # ===============================
-    df = df[pd.to_numeric(df["Labelling260205"], errors="coerce").notna()]
+    df = df[pd.to_numeric(df["Labelling260205"], errors="coerce").notna()].copy()
     df["Label"] = df["Labelling260205"].astype(int)
+    df = df[df["Label"].between(1, 8)].copy()
+    print(f"After label clean: {df.shape}")
 
-    df = df[df["Label"].between(1, 8)]
-
-    print(f"✅ After label clean: {df.shape}")
-
-    # ===============================
-    # 3. 特征列（模型必须）
-    # ===============================
-    feature_cols = [
-        "CKH_clean",
-        "CPOR_clean",
-        "PTR_P",
-        "PC_STRESS_CORR",
-        "SW_STRESS_CORR"
-    ]
-
-    # ✅ 可选列（用于网页展示）
-    optional_cols = [
-        "PORE_V_P",
-        "wellName"
-    ]
-
-    # ===============================
-    # 4. 检查字段
-    # ===============================
-    missing = [c for c in feature_cols if c not in df.columns]
+    missing = [col for col in FEATURE_COLS if col not in df.columns]
     if missing:
-        raise ValueError(f"❌ Missing required columns: {missing}")
+        raise ValueError(f"Missing required columns: {missing}")
 
-    # ===============================
-    # 5. 清洗数据
-    # ===============================
-    df = df.dropna(subset=feature_cols)
+    df = _build_core_id(df)
+    df = df.dropna(subset=FEATURE_COLS + ["Core_ID"]).copy()
 
-    # ✅ 只保留需要的列（但保留完整）
-    keep_cols = feature_cols + ["Label"]
-
-    for col in optional_cols:
-        if col in df.columns:
-            keep_cols.append(col)
-
+    keep_cols = FEATURE_COLS + ["Label", "Core_ID"]
+    keep_cols.extend([col for col in OPTIONAL_COLS if col in df.columns and col not in keep_cols])
     df = df[keep_cols].copy()
 
-    print(f"✅ Final dataset: {df.shape}")
+    core_sizes = df.groupby("Core_ID").size()
+    valid_curve_count = int((core_sizes >= 2).sum())
+    print(f"Final dataset: {df.shape}")
+    print(f"Core_ID groups: {len(core_sizes)} total, {valid_curve_count} with at least 2 rows")
 
-    # ===============================
-    # 6. 拆分数据（70 / 15 / 15）
-    # ===============================
-    X = df
-    y = df["Label"]
+    df_train, df_val, df_test = _split_by_core(df)
 
-    df_train, df_temp = train_test_split(
-        X,
-        test_size=0.3,
-        random_state=42,
-        stratify=y
-    )
+    print("\nDataset Split:")
+    print(f"Train: {df_train.shape}, Core_ID: {df_train['Core_ID'].nunique()}")
+    print(f"Validation: {df_val.shape}, Core_ID: {df_val['Core_ID'].nunique()}")
+    print(f"Test: {df_test.shape}, Core_ID: {df_test['Core_ID'].nunique()}")
 
-    df_val, df_test = train_test_split(
-        df_temp,
-        test_size=0.5,
-        random_state=42,
-        stratify=df_temp["Label"]
-    )
-
-    # ===============================
-    # 7. 输出统计
-    # ===============================
-    print("\n📊 Dataset Split:")
-    print(f"Train: {df_train.shape}")
-    print(f"Validation: {df_val.shape}")
-    print(f"Test: {df_test.shape}")
-
-    print("\n📊 Label Distribution:")
-
+    print("\nLabel Distribution:")
     print("\nTrain:")
-    print(df_train["Label"].value_counts(normalize=True))
-
+    print(df_train["Label"].value_counts(normalize=True).sort_index())
     print("\nValidation:")
-    print(df_val["Label"].value_counts(normalize=True))
-
+    print(df_val["Label"].value_counts(normalize=True).sort_index())
     print("\nTest:")
-    print(df_test["Label"].value_counts(normalize=True))
+    print(df_test["Label"].value_counts(normalize=True).sort_index())
 
-    # ===============================
-    # 8. 保存数据（网页可用 ✅）
-    # ===============================
     os.makedirs("data_split", exist_ok=True)
 
     df_train.to_excel("data_split/train.xlsx", index=False)
     df_val.to_excel("data_split/val.xlsx", index=False)
     df_test.to_excel("data_split/test.xlsx", index=False)
 
-    print("\n✅ Data saved:")
+    print("\nData saved:")
     print("data_split/train.xlsx")
     print("data_split/val.xlsx")
     print("data_split/test.xlsx")
@@ -118,14 +137,10 @@ def split_data(file_path):
     return df_train, df_val, df_test
 
 
-# ===============================
-# 主入口
-# ===============================
 if __name__ == "__main__":
-
     file_path = "data/training_dataset.xlsx"
 
     if not os.path.exists(file_path):
-        raise FileNotFoundError("❌ 请把数据放在 data/training_dataset.xlsx")
+        raise FileNotFoundError("Please put training_dataset.xlsx in the data folder.")
 
     split_data(file_path)
