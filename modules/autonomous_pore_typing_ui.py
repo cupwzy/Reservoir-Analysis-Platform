@@ -435,6 +435,18 @@ def _apply_merge_rules(refined_features, merge_rules):
     return merged
 
 
+def _apply_manual_type_corrections(df, sample_col, corrections):
+    corrected = df.copy()
+    corrected["CorrectedPoreType"] = corrected["AutoPoreType"].astype(int).astype(str)
+
+    if corrections:
+        sample_keys = corrected[sample_col].astype(str)
+        corrected_values = sample_keys.map(corrections)
+        corrected.loc[corrected_values.notna(), "CorrectedPoreType"] = corrected_values.dropna()
+
+    return corrected
+
+
 def _type_sort_key(label):
     parts = str(label).split(".")
     key = []
@@ -461,7 +473,11 @@ def _plot_capillary_curves(df, sample_col=None, type_col="AutoPoreType", title=N
         group = df[df[type_col].astype(str) == t].copy()
         base_type = str(t).split(".")[0]
         try:
-            color = COLOR_MAP.get(int(base_type), "gray")
+            base_type_number = int(base_type)
+            color = COLOR_MAP.get(
+                base_type_number,
+                COLOR_MAP.get(((base_type_number - 1) % len(COLOR_MAP)) + 1, "gray")
+            )
         except ValueError:
             color = COLOR_MAP.get((type_index % len(COLOR_MAP)) + 1, "gray")
 
@@ -470,7 +486,7 @@ def _plot_capillary_curves(df, sample_col=None, type_col="AutoPoreType", title=N
         else:
             sample_groups = [(None, group)]
 
-        for i, (_, sample_group) in enumerate(sample_groups):
+        for i, (sample_id, sample_group) in enumerate(sample_groups):
             sample_curve = (
                 sample_group[["SW_STRESS_CORR", "PC_STRESS_CORR"]]
                 .dropna()
@@ -485,6 +501,9 @@ def _plot_capillary_curves(df, sample_col=None, type_col="AutoPoreType", title=N
             y_log = np.log10(sample_curve["PC_STRESS_CORR"].to_numpy())
             x_smooth = np.linspace(x.min(), x.max(), CURVE_INTERPOLATION_POINTS)
             y_smooth = 10 ** np.interp(x_smooth, x, y_log)
+            fzi_value = sample_group["FZI"].median() if "FZI" in sample_group.columns else np.nan
+            fzi_text = f"{fzi_value:.3f}" if np.isfinite(fzi_value) else "N/A"
+            sample_text = str(sample_id) if sample_id is not None else "N/A"
 
             fig.add_trace(
                 go.Scatter(
@@ -494,7 +513,19 @@ def _plot_capillary_curves(df, sample_col=None, type_col="AutoPoreType", title=N
                     line=dict(width=1, color=color),
                     name=f"Type {t}",
                     legendgroup=f"Type {t}",
-                    showlegend=(i == 0)
+                    showlegend=(i == 0),
+                    customdata=np.column_stack([
+                        np.repeat(sample_text, len(x_smooth)),
+                        np.repeat(str(t), len(x_smooth)),
+                        np.repeat(fzi_text, len(x_smooth)),
+                    ]),
+                    hovertemplate=(
+                        "Sample: %{customdata[0]}<br>"
+                        "Type: %{customdata[1]}<br>"
+                        "FZI: %{customdata[2]}<br>"
+                        "Sw: %{x:.4f}<br>"
+                        "Pc: %{y:.4g}<extra></extra>"
+                    )
                 )
             )
 
@@ -532,7 +563,11 @@ def _plot_pore_throat_radius_distribution(df, sample_col=None, type_col="AutoPor
         group = valid[valid[type_col].astype(str) == t].copy()
         base_type = str(t).split(".")[0]
         try:
-            color = COLOR_MAP.get(int(base_type), "gray")
+            base_type_number = int(base_type)
+            color = COLOR_MAP.get(
+                base_type_number,
+                COLOR_MAP.get(((base_type_number - 1) % len(COLOR_MAP)) + 1, "gray")
+            )
         except ValueError:
             color = COLOR_MAP.get((type_index % len(COLOR_MAP)) + 1, "gray")
 
@@ -944,97 +979,191 @@ def run():
             "pressure, curve span, segment slopes, and slope complexity."
         )
 
-        st.markdown("### Secondary classification and merge")
+        st.markdown("### Manual classification correction")
 
-        available_types = sorted(df_classified["AutoPoreType"].dropna().unique())
-        selected_parent_type = st.selectbox(
-            "Primary type to split",
-            options=available_types,
-            format_func=lambda value: f"Type {int(value)}",
-            key="secondary_parent_type"
+        valid_sample_keys = set(df_classified[sample_col].astype(str).dropna().unique())
+        correction_key = "manual_pore_type_corrections"
+        if correction_key not in st.session_state:
+            st.session_state[correction_key] = {}
+        st.session_state[correction_key] = {
+            key: value
+            for key, value in st.session_state[correction_key].items()
+            if key in valid_sample_keys
+        }
+
+        sample_lookup = (
+            sample_features[[sample_col, "AutoPoreType", "FZI_median"]]
+            .copy()
+            .sort_values(["AutoPoreType", sample_col])
         )
+        sample_lookup["__SampleKey"] = sample_lookup[sample_col].astype(str)
+        available_auto_types = [
+            int(t)
+            for t in sorted(df_classified["AutoPoreType"].dropna().unique())
+        ]
 
-        parent_sample_count = int(
-            (sample_features["AutoPoreType"] == selected_parent_type).sum()
-        )
-        max_subtypes = min(6, parent_sample_count)
-
-        if parent_sample_count < 2:
-            st.warning(
-                f"Type {int(selected_parent_type)} has only {parent_sample_count} sample, "
-                "so it cannot be split further."
+        filter_cols = st.columns([1.2, 1.6, 1.4])
+        with filter_cols[0]:
+            selected_filter_types = st.multiselect(
+                "Filter by auto type",
+                options=available_auto_types,
+                default=available_auto_types,
+                format_func=lambda value: f"Type {int(value)}",
+                key="manual_filter_auto_types"
             )
-            refined_features = sample_features.copy()
-            refined_features["RefinedPoreType"] = refined_features["AutoPoreType"].astype(int).astype(str)
-            refined_features["FinalPoreType"] = refined_features["RefinedPoreType"]
-        else:
-            requested_subtypes = st.slider(
-                "Number of secondary subtypes",
-                min_value=2,
-                max_value=max_subtypes,
-                value=min(2, max_subtypes),
-                step=1,
-                key="secondary_type_count"
+
+        fzi_min = float(sample_lookup["FZI_median"].min())
+        fzi_max = float(sample_lookup["FZI_median"].max())
+        with filter_cols[1]:
+            if fzi_min < fzi_max:
+                fzi_range = st.slider(
+                    "Filter by FZI",
+                    min_value=fzi_min,
+                    max_value=fzi_max,
+                    value=(fzi_min, fzi_max),
+                    step=max((fzi_max - fzi_min) / 100, 0.01),
+                    format="%.2f",
+                    key="manual_filter_fzi"
+                )
+            else:
+                fzi_range = (fzi_min, fzi_max)
+                st.caption(f"FZI filter unavailable: all curves have FZI {fzi_min:.2f}.")
+
+        with filter_cols[2]:
+            sample_search = st.text_input(
+                "Search curve ID",
+                value="",
+                placeholder="Core_ID / sample name",
+                key="manual_filter_sample_search"
+            ).strip()
+
+        filtered_lookup = sample_lookup[
+            sample_lookup["AutoPoreType"].isin(selected_filter_types)
+            & sample_lookup["FZI_median"].between(fzi_range[0], fzi_range[1])
+        ].copy()
+        if sample_search:
+            filtered_lookup = filtered_lookup[
+                filtered_lookup["__SampleKey"].str.contains(sample_search, case=False, na=False)
+            ]
+
+        if filtered_lookup.empty:
+            st.warning("No curves match the current filters. Showing all curves instead.")
+            filtered_lookup = sample_lookup.copy()
+
+        sample_options = filtered_lookup["__SampleKey"].tolist()
+        sample_labels = {
+            row["__SampleKey"]: (
+                f"{row[sample_col]} | Auto Type {int(row['AutoPoreType'])} | "
+                f"FZI {row['FZI_median']:.2f}"
+            )
+            for _, row in sample_lookup.iterrows()
+        }
+        st.caption(f"{len(sample_options)} curve(s) available after filtering.")
+
+        correction_cols = st.columns([2, 1, 1, 1])
+        with correction_cols[0]:
+            selected_sample_key = st.selectbox(
+                "Curve to correct",
+                options=sample_options,
+                format_func=lambda value: sample_labels.get(value, value),
+                key="manual_curve_to_correct"
             )
 
-            try:
-                refined_features = _subcluster_selected_type(
-                    sample_features,
-                    feature_cols,
-                    selected_parent_type,
-                    requested_subtypes,
-                    int(random_state)
-                )
-            except Exception as exc:
-                st.error(str(exc))
-                refined_features = sample_features.copy()
-                refined_features["RefinedPoreType"] = refined_features["AutoPoreType"].astype(int).astype(str)
-                refined_features["FinalPoreType"] = refined_features["RefinedPoreType"]
+        current_auto_type = int(
+            sample_lookup.loc[
+                sample_lookup["__SampleKey"] == selected_sample_key,
+                "AutoPoreType"
+            ].iloc[0]
+        )
+        current_corrected_type = st.session_state[correction_key].get(
+            selected_sample_key,
+            str(current_auto_type)
+        )
+        available_types = [
+            str(int(t))
+            for t in available_auto_types
+        ]
 
-        refined_labels = sorted(
-            refined_features["RefinedPoreType"].dropna().astype(str).unique(),
-            key=_type_sort_key
+        with correction_cols[1]:
+            correction_mode = st.radio(
+                "Assignment",
+                options=["Existing", "New"],
+                horizontal=True,
+                key="manual_correction_mode"
+            )
+
+        with correction_cols[2]:
+            if correction_mode == "Existing":
+                new_type = st.selectbox(
+                    "Corrected type",
+                    options=available_types,
+                    index=available_types.index(current_corrected_type)
+                    if current_corrected_type in available_types else available_types.index(str(current_auto_type)),
+                    format_func=lambda value: f"Type {value}",
+                    key="manual_corrected_type"
+                )
+            else:
+                default_new_type = (
+                    current_corrected_type
+                    if current_corrected_type not in available_types
+                    else str(max(int(t) for t in available_types) + 1)
+                )
+                new_type = st.text_input(
+                    "New type label",
+                    value=default_new_type,
+                    key="manual_new_type_label"
+                ).strip()
+
+        with correction_cols[3]:
+            st.write("")
+            st.write("")
+            if st.button("Apply correction", key="apply_manual_type_correction"):
+                if not new_type:
+                    st.warning("Please enter a valid type label.")
+                elif new_type == str(current_auto_type):
+                    st.session_state[correction_key].pop(selected_sample_key, None)
+                    st.rerun()
+                else:
+                    st.session_state[correction_key][selected_sample_key] = new_type
+                    st.rerun()
+
+        reset_cols = st.columns([1, 3])
+        with reset_cols[0]:
+            if st.button("Reset corrections", key="reset_manual_type_corrections"):
+                st.session_state[correction_key] = {}
+                st.rerun()
+        with reset_cols[1]:
+            correction_count = len(st.session_state[correction_key])
+            st.caption(f"{correction_count} manually corrected curve(s) in this session.")
+
+        df_corrected = _apply_manual_type_corrections(
+            df_classified,
+            sample_col,
+            st.session_state[correction_key]
         )
 
-        merge_rule_count = st.number_input(
-            "Number of merge rules",
-            min_value=0,
-            max_value=5,
-            value=0,
-            step=1,
-            key="merge_rule_count"
+        selected_curve = df_corrected[
+            df_corrected[sample_col].astype(str) == selected_sample_key
+        ].copy()
+        st.plotly_chart(
+            _plot_capillary_curves(
+                selected_curve,
+                sample_col,
+                type_col="CorrectedPoreType",
+                title="Selected Capillary Pressure Curve"
+            ),
+            use_container_width=True
         )
-
-        merge_rules = []
-        for i in range(int(merge_rule_count)):
-            cols = st.columns([2, 1])
-            with cols[0]:
-                selected_labels = st.multiselect(
-                    f"Types to merge #{i + 1}",
-                    options=refined_labels,
-                    key=f"merge_labels_{i}"
-                )
-            with cols[1]:
-                default_label = f"M{i + 1}"
-                new_label = st.text_input(
-                    f"New type #{i + 1}",
-                    value=default_label,
-                    key=f"merge_name_{i}"
-                )
-            merge_rules.append((selected_labels, new_label))
-
-        refined_features = _apply_merge_rules(refined_features, merge_rules)
-        df_refined = _assign_refined_types_to_rows(df_classified, refined_features, sample_col)
 
         curve_type_col = st.radio(
             "Curve grouping",
-            options=["FinalPoreType", "RefinedPoreType", "AutoPoreType"],
+            options=["CorrectedPoreType", "AutoPoreType"],
             horizontal=True,
-            key="secondary_curve_type_col"
+            key="manual_curve_type_col"
         )
         st.plotly_chart(
             _plot_capillary_curves(
-                df_refined,
+                df_corrected,
                 sample_col,
                 type_col=curve_type_col,
                 title=f"Capillary Pressure Curves by {curve_type_col}"
@@ -1043,7 +1172,13 @@ def run():
         )
 
     with tab2:
-        radius_fig = _plot_pore_throat_radius_distribution(df_classified, sample_col)
+        radius_source = df_corrected if "df_corrected" in locals() else df_classified
+        radius_type_col = "CorrectedPoreType" if "CorrectedPoreType" in radius_source.columns else "AutoPoreType"
+        radius_fig = _plot_pore_throat_radius_distribution(
+            radius_source,
+            sample_col,
+            type_col=radius_type_col
+        )
         if radius_fig is not None:
             st.plotly_chart(radius_fig, use_container_width=True)
         else:
