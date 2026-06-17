@@ -686,6 +686,99 @@ def _plot_class_controlled_fzi(df):
     return fig
 
 
+def _plot_rca_fzi_constrained(df):
+    valid = df[
+        (df["CPOR_clean"] > 0) &
+        (df["CPOR_clean"] < 1) &
+        (df["CKH_clean"] > 0) &
+        df["AutoPoreType"].notna()
+    ].copy()
+    if valid.empty:
+        return None
+
+    fig = go.Figure()
+    phi = np.linspace(0.005, 0.35, 260)
+    fzi_boundaries = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0]
+
+    for fzi in fzi_boundaries:
+        k = 1014 * (fzi ** 2) * (phi ** 3) / ((1 - phi) ** 2)
+        fig.add_trace(
+            go.Scatter(
+                x=phi,
+                y=k,
+                mode="lines",
+                line=dict(color="rgba(150,150,150,0.55)", width=2),
+                name=f"FZI {fzi:g}",
+                showlegend=False,
+                hovertemplate=f"FZI={fzi:g}<br>CPOR=%{{x:.3f}}<br>CKH=%{{y:.3g}}<extra></extra>",
+            )
+        )
+
+    for t in sorted(valid["AutoPoreType"].dropna().unique()):
+        group = valid[valid["AutoPoreType"] == t].copy()
+        color = COLOR_MAP.get(int(t), "gray")
+
+        fig.add_trace(
+            go.Scatter(
+                x=group["CPOR_clean"],
+                y=group["CKH_clean"],
+                mode="markers",
+                marker=dict(size=SCATTER_MARKER_SIZE, color=color, opacity=0.58),
+                name=f"Type {int(t)}",
+                legendgroup=f"Type {int(t)}",
+            )
+        )
+
+        if len(group) < 5 or group["CPOR_clean"].nunique() < 2:
+            continue
+
+        x = group["CPOR_clean"].to_numpy()
+        y = np.log10(group["CKH_clean"].to_numpy())
+        slope, intercept = np.polyfit(x, y, 1)
+
+        phi_fit = np.linspace(x.min(), x.max(), 120)
+        k_fit = 10 ** (slope * phi_fit + intercept)
+
+        fzi_median = group["FZI"].median()
+        lower_fzi = np.nanpercentile(group["FZI"], 10)
+        upper_fzi = np.nanpercentile(group["FZI"], 90)
+        lower_curve = 1014 * (lower_fzi ** 2) * (phi_fit ** 3) / ((1 - phi_fit) ** 2)
+        upper_curve = 1014 * (upper_fzi ** 2) * (phi_fit ** 3) / ((1 - phi_fit) ** 2)
+        k_fit = np.clip(k_fit, lower_curve, upper_curve)
+
+        fig.add_trace(
+            go.Scatter(
+                x=phi_fit,
+                y=k_fit,
+                mode="lines",
+                line=dict(color=color, width=2),
+                name=f"Type {int(t)} RCA fit",
+                legendgroup=f"Type {int(t)}",
+                hovertemplate=(
+                    f"Type {int(t)} RCA fit<br>"
+                    f"Median FZI={fzi_median:.2f}<br>"
+                    "CPOR=%{x:.3f}<br>CKH=%{y:.3g}<extra></extra>"
+                ),
+            )
+        )
+
+    y_min = max(valid["CKH_clean"].min() * 0.3, 1e-4)
+    y_max = valid["CKH_clean"].max() * 3
+    fig.update_layout(
+        title="RCA FZI-Constrained Classification Crossplot",
+        xaxis_title="CPOR_clean (v/v)",
+        yaxis_title="CKH_clean (mD)",
+        xaxis=dict(range=[0, max(0.35, valid["CPOR_clean"].max() * 1.05)]),
+        yaxis=dict(type="log", range=[np.log10(y_min), np.log10(y_max)]),
+        plot_bgcolor="white",
+        legend=dict(title="Auto Type / RCA")
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="lightgray", mirror=True, showline=True, linecolor="black")
+    fig.update_yaxes(showgrid=True, gridcolor="lightgray", mirror=True, showline=True, linecolor="black")
+
+    return fig
+
+
 def _plot_feature_space(sample_features):
     if "PCA1" not in sample_features.columns or "PCA2" not in sample_features.columns:
         return None
@@ -855,12 +948,11 @@ def run():
         mime="text/csv"
     )
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "Carbonate Capillary Pressure Curves",
         "Pore Throat Radius Distribution",
-        "Porosity-Permeability Plot",
         "Classification-Controlled FZI",
-        "Feature Space"
+        "RCA FZI-Constrained Classification"
     ])
 
     with tab1:
@@ -977,19 +1069,15 @@ def run():
             st.warning("PTR_P and positive PORE_V_P values are required to draw pore throat distribution curves.")
 
     with tab3:
-        st.plotly_chart(_plot_poroperm(df_classified), use_container_width=True)
-
-    with tab4:
         st.plotly_chart(_plot_class_controlled_fzi(df_classified), use_container_width=True)
         st.caption(
             "The FZI curves in this panel are controlled by the autonomous classification: "
             "each curve uses the median FZI of its classified pore type."
         )
 
-    with tab5:
-        feature_fig = _plot_feature_space(sample_features)
-        if feature_fig is not None:
-            st.plotly_chart(feature_fig, use_container_width=True)
-        st.markdown("### Features used for autonomous classification")
-        st.write(feature_cols)
-        st.dataframe(sample_features.head(200), use_container_width=True)
+    with tab4:
+        rca_fig = _plot_rca_fzi_constrained(df_classified)
+        if rca_fig is not None:
+            st.plotly_chart(rca_fig, use_container_width=True)
+        else:
+            st.warning("Valid CPOR_clean and CKH_clean values are required to draw the RCA crossplot.")
