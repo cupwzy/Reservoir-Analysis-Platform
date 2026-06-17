@@ -1,8 +1,12 @@
 # Data directories
 data/
+data_split/
 outputs/
 logs/
 modules/*.pkl
+models/*.pkl
+~$*.xlsx
+**/~$*.xlsx
 
 *.log
 
