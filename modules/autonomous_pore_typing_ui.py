@@ -515,58 +515,68 @@ def _plot_capillary_curves(df, sample_col=None, type_col="AutoPoreType", title=N
     return fig
 
 
-def _plot_pore_throat_radius_distribution(df):
-    if "PTR_P" not in df.columns:
+def _plot_pore_throat_radius_distribution(df, sample_col=None, type_col="AutoPoreType"):
+    if "PTR_P" not in df.columns or "PORE_V_P" not in df.columns:
         return None
 
-    valid = df[(df["PTR_P"] > 0) & df["AutoPoreType"].notna()].copy()
+    valid = df[
+        (df["PTR_P"] > 0) &
+        (df["PORE_V_P"] > 0) &
+        df[type_col].notna()
+    ].copy()
     if valid.empty:
         return None
 
-    radius_min = valid["PTR_P"].min()
-    radius_max = valid["PTR_P"].max()
-    if radius_min == radius_max:
-        radius_min *= 0.95
-        radius_max *= 1.05
-
-    bins = np.logspace(np.log10(radius_min), np.log10(radius_max), PORE_RADIUS_BINS + 1)
-    centers = 10 ** ((np.log10(bins[:-1]) + np.log10(bins[1:])) / 2)
-    use_pore_volume = "PORE_V_P" in valid.columns and valid["PORE_V_P"].fillna(0).gt(0).any()
-
     fig = go.Figure()
 
-    for t in sorted(valid["AutoPoreType"].dropna().unique()):
-        group = valid[valid["AutoPoreType"] == t].copy()
-        color = COLOR_MAP.get(int(t), "gray")
+    type_values = sorted(
+        valid[type_col].dropna().astype(str).unique(),
+        key=_type_sort_key
+    )
 
-        if use_pore_volume:
-            weights = group["PORE_V_P"].where(group["PORE_V_P"] > 0, 0).fillna(0).to_numpy()
+    for type_index, t in enumerate(type_values):
+        group = valid[valid[type_col].astype(str) == t].copy()
+        base_type = str(t).split(".")[0]
+        try:
+            color = COLOR_MAP.get(int(base_type), "gray")
+        except ValueError:
+            color = COLOR_MAP.get((type_index % len(COLOR_MAP)) + 1, "gray")
+
+        if sample_col in group.columns:
+            sample_groups = group.groupby(sample_col, dropna=False)
         else:
-            weights = np.ones(len(group))
+            sample_groups = [(None, group)]
 
-        hist, _ = np.histogram(group["PTR_P"].to_numpy(), bins=bins, weights=weights)
-        total = hist.sum()
-        if total <= 0:
-            continue
-
-        fig.add_trace(
-            go.Scatter(
-                x=centers,
-                y=hist / total,
-                mode="lines",
-                line=dict(width=2, color=color),
-                name=f"Type {int(t)}"
+        for i, (_, sample_group) in enumerate(sample_groups):
+            sample_curve = (
+                sample_group[["PTR_P", "PORE_V_P"]]
+                .dropna()
+                .groupby("PTR_P", as_index=False)["PORE_V_P"]
+                .sum()
+                .sort_values("PTR_P")
             )
-        )
+            if len(sample_curve) < 2:
+                continue
+
+            fig.add_trace(
+                go.Scatter(
+                    x=sample_curve["PTR_P"],
+                    y=sample_curve["PORE_V_P"],
+                    mode="lines",
+                    line=dict(width=1, color=color),
+                    name=f"Type {t}",
+                    legendgroup=f"Type {t}",
+                    showlegend=(i == 0)
+                )
+            )
 
     fig.update_layout(
-        title="Carbonate Pore Throat Radius Distribution by Autonomous Pore Type",
-        xaxis_title="Pore throat radius (PTR_P)",
-        yaxis_title="Proportion of total pore throat contribution",
+        title="Pore Throat Radius Distribution Curves by Autonomous Pore Type",
+        xaxis_title="Pore throat radius, PTR_P (um)",
+        yaxis_title="PORE_V_P (%)",
         xaxis=dict(type="log"),
-        yaxis=dict(tickformat=".0%"),
         plot_bgcolor="white",
-        legend=dict(title="Auto Type")
+        legend=dict(title=type_col)
     )
     fig.update_xaxes(showgrid=True, gridcolor="lightgray")
     fig.update_yaxes(showgrid=True, gridcolor="lightgray")
@@ -960,11 +970,11 @@ def run():
         )
 
     with tab2:
-        radius_fig = _plot_pore_throat_radius_distribution(df_classified)
+        radius_fig = _plot_pore_throat_radius_distribution(df_classified, sample_col)
         if radius_fig is not None:
             st.plotly_chart(radius_fig, use_container_width=True)
         else:
-            st.warning("PTR_P is required to draw the pore throat radius distribution.")
+            st.warning("PTR_P and positive PORE_V_P values are required to draw pore throat distribution curves.")
 
     with tab3:
         st.plotly_chart(_plot_poroperm(df_classified), use_container_width=True)
