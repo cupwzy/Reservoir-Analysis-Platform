@@ -7,6 +7,8 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
+from modules.ui_theme import COLORS, TYPE_COLORS, style_plotly
+
 
 REQUIRED_COLUMNS = ["CPOR_clean", "CKH_clean", "PC_STRESS_CORR", "SW_STRESS_CORR"]
 OPTIONAL_COLUMNS = ["PTR_P", "PORE_V_P"]
@@ -25,22 +27,17 @@ SAMPLE_ID_COMBINATIONS = [
     ("WELL", "Plug"),
 ]
 
-COLOR_MAP = {
-    1: "blue",
-    2: "green",
-    3: "goldenrod",
-    4: "red",
-    5: "orange",
-    6: "purple",
-    7: "brown",
-    8: "black",
-}
+COLOR_MAP = TYPE_COLORS
 
 SCATTER_MARKER_SIZE = 4
 FEATURE_MARKER_SIZE = 6
 CURVE_INTERPOLATION_POINTS = 160
 CARBONATE_PC_SATURATIONS = [0.10, 0.25, 0.50, 0.75, 0.90]
 PORE_RADIUS_BINS = 40
+
+
+def _style_figure(fig, legend_title=None):
+    return style_plotly(fig, legend_title=legend_title)
 
 
 def _valid_curve_group_count(df, sample_col):
@@ -505,12 +502,9 @@ def _plot_capillary_curves(df, sample_col=None, type_col="AutoPoreType", title=N
         title=title or "Mercury Injection Capillary Pressure Curves by Autonomous Pore Type",
         xaxis_title="Water Saturation / Mercury Saturation Proxy (fraction)",
         yaxis_title="Capillary Pressure (Pc)",
-        yaxis=dict(type="log"),
-        plot_bgcolor="white",
-        legend=dict(title=type_col)
+        yaxis=dict(type="log")
     )
-    fig.update_xaxes(showgrid=True, gridcolor="lightgray")
-    fig.update_yaxes(showgrid=True, gridcolor="lightgray")
+    _style_figure(fig, legend_title=type_col)
 
     return fig
 
@@ -574,12 +568,9 @@ def _plot_pore_throat_radius_distribution(df, sample_col=None, type_col="AutoPor
         title="Pore Throat Radius Distribution Curves by Autonomous Pore Type",
         xaxis_title="Pore throat radius, PTR_P (um)",
         yaxis_title="PORE_V_P (%)",
-        xaxis=dict(type="log"),
-        plot_bgcolor="white",
-        legend=dict(title=type_col)
+        xaxis=dict(type="log")
     )
-    fig.update_xaxes(showgrid=True, gridcolor="lightgray")
-    fig.update_yaxes(showgrid=True, gridcolor="lightgray")
+    _style_figure(fig, legend_title=type_col)
 
     return fig
 
@@ -622,12 +613,9 @@ def _plot_poroperm(df):
         title="Porosity-Permeability Crossplot with Autonomous Type Fits",
         xaxis_title="CPOR_clean (v/v)",
         yaxis_title="CKH_clean (mD)",
-        yaxis=dict(type="log"),
-        plot_bgcolor="white",
-        legend=dict(title="Auto Type")
+        yaxis=dict(type="log")
     )
-    fig.update_xaxes(showgrid=True, gridcolor="lightgray")
-    fig.update_yaxes(showgrid=True, gridcolor="lightgray")
+    _style_figure(fig, legend_title="Auto Type")
 
     return fig
 
@@ -676,12 +664,9 @@ def _plot_class_controlled_fzi(df):
         xaxis_title="CPOR_clean (v/v)",
         yaxis_title="CKH_clean (mD)",
         xaxis=dict(range=[0, 0.4]),
-        yaxis=dict(type="log", range=[-3, 4]),
-        plot_bgcolor="white",
-        legend=dict(title="Auto Type / FZI")
+        yaxis=dict(type="log", range=[-3, 4])
     )
-    fig.update_xaxes(showgrid=True, gridcolor="lightgray")
-    fig.update_yaxes(showgrid=True, gridcolor="lightgray")
+    _style_figure(fig, legend_title="Auto Type / FZI")
 
     return fig
 
@@ -769,12 +754,11 @@ def _plot_rca_fzi_constrained(df):
         xaxis_title="CPOR_clean (v/v)",
         yaxis_title="CKH_clean (mD)",
         xaxis=dict(range=[0, max(0.35, valid["CPOR_clean"].max() * 1.05)]),
-        yaxis=dict(type="log", range=[np.log10(y_min), np.log10(y_max)]),
-        plot_bgcolor="white",
-        legend=dict(title="Auto Type / RCA")
+        yaxis=dict(type="log", range=[np.log10(y_min), np.log10(y_max)])
     )
-    fig.update_xaxes(showgrid=True, gridcolor="lightgray", mirror=True, showline=True, linecolor="black")
-    fig.update_yaxes(showgrid=True, gridcolor="lightgray", mirror=True, showline=True, linecolor="black")
+    _style_figure(fig, legend_title="Auto Type / RCA")
+    fig.update_xaxes(mirror=True, showline=True, linecolor=COLORS["ink"])
+    fig.update_yaxes(mirror=True, showline=True, linecolor=COLORS["ink"])
 
     return fig
 
@@ -800,12 +784,9 @@ def _plot_feature_space(sample_features):
     fig.update_layout(
         title="Autonomous Classification Feature Space (PCA)",
         xaxis_title="PCA 1",
-        yaxis_title="PCA 2",
-        plot_bgcolor="white",
-        legend=dict(title="Auto Type")
+        yaxis_title="PCA 2"
     )
-    fig.update_xaxes(showgrid=True, gridcolor="lightgray")
-    fig.update_yaxes(showgrid=True, gridcolor="lightgray")
+    _style_figure(fig, legend_title="Auto Type")
 
     return fig
 

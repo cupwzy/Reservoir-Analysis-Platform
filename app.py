@@ -7,15 +7,25 @@ from modules.mapping import plot_well_map
 from modules.well_data import load_and_merge_well_data
 from modules import pore_typing_ui
 from modules import autonomous_pore_typing_ui
+from modules.ui_theme import apply_theme
 
 # ===============================
 # 页面配置
 # ===============================
 st.set_page_config(layout="wide")
+apply_theme()
 
 st.title("Reservoir Analysis Platform")
 
 # ✅ 更新 Navigation
+if "navigation" not in st.session_state:
+    st.session_state.navigation = "Home"
+
+
+def _set_navigation(target):
+    st.session_state.navigation = target
+
+
 menu = st.sidebar.radio(
     "Navigation",
     [
@@ -24,7 +34,8 @@ menu = st.sidebar.radio(
         "Multi-Well Analysis", 
         "Pore Typing",
         "Autonomous Pore Typing"
-    ]
+    ],
+    key="navigation"
 )
 
 if menu == "Pore Typing":
@@ -44,60 +55,132 @@ if "master_df" not in st.session_state:
 # =========================
 if menu == "Home":
 
-    st.subheader("Platform Overview")
+    st.markdown(
+        """
+        <div class="rp-hero">
+            <div class="rp-kicker">Reservoir intelligence workspace</div>
+            <h2>From well files to pore-system decisions.</h2>
+            <p>
+                A focused reservoir analysis platform for loading well metadata, comparing multi-well
+                interpretation results, and classifying carbonate pore throat systems from capillary-pressure
+                and pore throat radius data.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-    st.write("""
-    This platform supports:
+    master_loaded = st.session_state.master_df is not None
+    wells_loaded = "df_all" in st.session_state
+    master_count = (
+        st.session_state.master_df["Name"].nunique()
+        if master_loaded and "Name" in st.session_state.master_df.columns else 0
+    )
+    interpretation_count = (
+        st.session_state.df_all["Well"].nunique()
+        if wells_loaded and "Well" in st.session_state.df_all.columns else 0
+    )
 
-    - Well mapping
-    - Multi-well data integration
-    - Reservoir property analysis
-    - Net pay calculation
-    """)
+    st.markdown("### Workspace Status")
+    status_cols = st.columns(3)
 
-    st.markdown("---")
+    with status_cols[0]:
+        dot_class = "rp-status-dot" if master_loaded else "rp-status-dot rp-status-dot-muted"
+        text = f"{master_count} wells loaded" if master_loaded else "Waiting for master table"
+        st.markdown(
+            f"""
+            <div class="rp-card">
+                <div class="rp-chip">Well Map</div>
+                <div class="rp-status"><span class="{dot_class}"></span>{text}</div>
+                <p>Upload well coordinates and symbols to build the field location map.</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
-    # =========================
-    # Data Status
-    # =========================
-    st.markdown("### Data Status")
+    with status_cols[1]:
+        dot_class = "rp-status-dot" if wells_loaded else "rp-status-dot rp-status-dot-muted"
+        text = f"{interpretation_count} wells integrated" if wells_loaded else "Waiting for interpretation files"
+        st.markdown(
+            f"""
+            <div class="rp-card">
+                <div class="rp-chip">Multi-Well</div>
+                <div class="rp-status"><span class="{dot_class}"></span>{text}</div>
+                <p>Merge interpretation spreadsheets, select zones, and compare reservoir properties.</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
-    col1, col2 = st.columns(2)
+    with status_cols[2]:
+        st.markdown(
+            """
+            <div class="rp-card-dark">
+                <div class="rp-chip">Pore Typing</div>
+                <h3>Carbonate pore throat analysis</h3>
+                <p>Run supervised pore typing or autonomous capillary-curve classification workflows.</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
-    with col1:
-        if st.session_state.master_df is not None:
-            st.success("Master Table Loaded")
-            st.write(f"Wells: {st.session_state.master_df['Name'].nunique()}")
-        else:
-            st.warning("Master Table Not Loaded")
+    st.markdown("### Start a Workflow")
+    module_cols = st.columns(4)
+    modules = [
+        ("Well Map", "Load master well table and inspect well locations."),
+        ("Multi-Well Analysis", "Merge interpretation results and compare zones."),
+        ("Pore Typing", "Use trained pore typing methods and RCA overlays."),
+        ("Autonomous Pore Typing", "Classify carbonate MICP curves without labels."),
+    ]
 
-    with col2:
-        if "df_all" in st.session_state:
-            st.success("Well Data Loaded")
-            st.write(f"Total Wells: {st.session_state.df_all['Well'].nunique()}")
-        else:
-            st.warning("Well Data Not Loaded")
+    for col, (target, description) in zip(module_cols, modules):
+        with col:
+            st.markdown(
+                f"""
+                <div class="rp-step">
+                    <strong>{target}</strong>
+                    <span>{description}</span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            st.button(
+                f"Open {target}",
+                key=f"home_open_{target}",
+                on_click=_set_navigation,
+                args=(target,)
+            )
 
-    st.markdown("---")
+    st.markdown("### Recommended Analysis Path")
+    step_cols = st.columns(4)
+    steps = [
+        ("1. Load well metadata", "Start in Well Map with Name, symbol, surface coordinates, and target."),
+        ("2. Integrate interpretation files", "Upload per-well interpretation spreadsheets and select target zones."),
+        ("3. Classify pore systems", "Use Pore Typing or Autonomous Pore Typing depending on label availability."),
+        ("4. Review RCA and exports", "Inspect FZI-constrained RCA, capillary curves, and classification results."),
+    ]
+    for col, (title, body) in zip(step_cols, steps):
+        with col:
+            st.markdown(
+                f"""
+                <div class="rp-step">
+                    <strong>{title}</strong>
+                    <span>{body}</span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
-    # =========================
-    # Preview
-    # =========================
-    if st.session_state.master_df is not None:
+    if master_loaded:
         st.markdown("### Well Overview")
-        st.dataframe(st.session_state.master_df.head(), use_container_width=True)
+        st.dataframe(st.session_state.master_df.head(8), use_container_width=True)
 
-    # =========================
-    # Workflow
-    # =========================
-    st.markdown("### Workflow")
-
-    st.info("""
-    1. Upload Master Table (Well Map)
-    2. Upload Well Data (Workspace)
-    3. Select ZONE
-    4. Perform Analysis
-    """)
+    st.markdown("### Local Data Notice")
+    st.info(
+        "Large reservoir datasets, split workbooks, model binaries, logs, and outputs are kept local "
+        "and ignored by Git. Put source datasets in `data/`, regenerate split files when needed, "
+        "and avoid uploading sensitive well data to GitHub."
+    )
 
 # =========================
 # WELL MAP

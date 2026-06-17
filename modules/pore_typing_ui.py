@@ -8,6 +8,7 @@ import plotly.express as px
 from modules.pore_model import load_model_by_name
 from modules.rac import prepare_rca_data, apply_fzi_typing, train_rca_model
 from modules.pc import (prepare_pc_data,generate_pc_curve)
+from modules.ui_theme import TYPE_COLORS
 
 def render_rca_panel(df_plot, rca_models, mode, key_prefix):
 
@@ -24,10 +25,7 @@ def render_rca_panel(df_plot, rca_models, mode, key_prefix):
 
     fig_rca = go.Figure()
 
-    color_map = {
-        1: "blue", 2: "green", 3: "goldenrod", 4: "red",
-        5: "orange", 6: "purple", 7: "brown", 8: "black",
-    }
+    color_map = TYPE_COLORS
 
     ymin = 10 ** -3
     ymax = 10 ** 4
@@ -344,10 +342,7 @@ Output:
 
         fig = go.Figure()
 
-        colors = [
-            "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
-            "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"
-        ]
+        colors = list(TYPE_COLORS.values())
 
         for i, cls in enumerate(sorted(df_plot["PoreType"].unique())):
 
@@ -527,10 +522,7 @@ Output:
             # ===============================
             types = sorted(df_plot["FZI_Type"].dropna().unique())
 
-            color_map = {
-                1: "blue", 2: "green", 3: "goldenrod", 4: "red",
-                5: "orange", 6: "purple", 7: "brown", 8: "black"
-            }
+            color_map = TYPE_COLORS
 
             for t in types:
                 group = df_plot[df_plot["FZI_Type"] == t]
@@ -636,10 +628,7 @@ Output:
             # 散点
             types = sorted(df_plot["PoreType"].dropna().unique())
 
-            color_map = {
-                1: "blue", 2: "green", 3: "goldenrod", 4: "orange",
-                5: "red", 6: "purple", 7: "brown", 8: "black"
-            }
+            color_map = TYPE_COLORS
 
             for t in types:
                 group = df_plot[df_plot["PoreType"] == t]
@@ -713,10 +702,7 @@ Output:
             # 散点
             types = sorted(df_plot["PoreType"].dropna().unique())
 
-            color_map = {
-                1: "blue", 2: "green", 3: "goldenrod", 4: "orange",
-                5: "red", 6: "purple", 7: "brown", 8: "black"
-            }
+            color_map = TYPE_COLORS
 
             for t in types:
                 group = df_plot[df_plot["PoreType"] == t]
