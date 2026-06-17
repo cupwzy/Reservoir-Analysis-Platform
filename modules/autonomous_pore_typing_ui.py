@@ -12,7 +12,17 @@ REQUIRED_COLUMNS = ["CPOR_clean", "CKH_clean", "PC_STRESS_CORR", "SW_STRESS_CORR
 OPTIONAL_COLUMNS = ["PTR_P", "PORE_V_P"]
 SAMPLE_ID_CANDIDATES = [
     "SampleID", "Sample_ID", "Sample", "Plug", "Plug_ID", "Core_ID",
-    "wellName", "Well", "WELL", "Core", "CoreNo"
+    "ID", "ReferenceName", "wellName", "Well", "WELL", "WellName_2",
+    "Core", "CoreNo"
+]
+SAMPLE_ID_COMBINATIONS = [
+    ("WellName_2", "Plug No"),
+    ("WellName_2", "ReferenceName"),
+    ("WellName_2", "ID"),
+    ("wellName", "Plug No"),
+    ("wellName", "ReferenceName"),
+    ("Well", "Plug"),
+    ("WELL", "Plug"),
 ]
 
 COLOR_MAP = {
@@ -33,6 +43,14 @@ CARBONATE_PC_SATURATIONS = [0.10, 0.25, 0.50, 0.75, 0.90]
 PORE_RADIUS_BINS = 40
 
 
+def _valid_curve_group_count(df, sample_col):
+    grouped = df.dropna(subset=[sample_col]).groupby(sample_col)
+    group_sizes = grouped.size()
+    unique_sw = grouped["SW_STRESS_CORR"].nunique()
+    valid_groups = (group_sizes >= 2) & (unique_sw >= 2)
+    return int(valid_groups.sum()), int(group_sizes.size)
+
+
 def _find_sample_col(df):
     ranked_candidates = []
 
@@ -44,11 +62,10 @@ def _find_sample_col(df):
         if values.empty:
             continue
 
-        group_sizes = df.dropna(subset=[col]).groupby(col).size()
-        valid_curve_groups = int((group_sizes >= 2).sum())
+        valid_curve_groups, _ = _valid_curve_group_count(df, col)
         unique_count = int(values.nunique())
 
-        if unique_count > 1:
+        if unique_count > 1 and valid_curve_groups >= 2:
             ranked_candidates.append((valid_curve_groups, unique_count, col))
 
     if not ranked_candidates:
@@ -56,6 +73,77 @@ def _find_sample_col(df):
 
     ranked_candidates.sort(reverse=True)
     return ranked_candidates[0][2]
+
+
+def _auto_assign_sample_identifier(df):
+    df = df.copy()
+    ranked_ids = []
+
+    for col in SAMPLE_ID_CANDIDATES:
+        if col not in df.columns or df[col].dropna().empty:
+            continue
+
+        valid_count, total_count = _valid_curve_group_count(df, col)
+        unique_count = int(df[col].dropna().nunique())
+        if unique_count > 1 and valid_count >= 2:
+            ranked_ids.append({
+                "valid_count": valid_count,
+                "total_count": total_count,
+                "unique_count": unique_count,
+                "sample_col": col,
+                "df": df,
+                "message": (
+                    f"Using `{col}` as the sample identifier "
+                    f"({valid_count} of {total_count} groups have valid capillary curves)."
+                ),
+            })
+
+    for cols in SAMPLE_ID_COMBINATIONS:
+        if not set(cols).issubset(df.columns):
+            continue
+
+        auto_col = "Core_ID"
+        values = [
+            df[col].astype(str).str.strip().replace({"": np.nan, "nan": np.nan})
+            for col in cols
+        ]
+        auto_values = values[0]
+        for value in values[1:]:
+            auto_values = auto_values + "_" + value
+
+        candidate = df.copy()
+        candidate[auto_col] = auto_values
+        valid_count, total_count = _valid_curve_group_count(candidate, auto_col)
+        if valid_count >= 2:
+            unique_count = int(candidate[auto_col].dropna().nunique())
+            ranked_ids.append({
+                "valid_count": valid_count,
+                "total_count": total_count,
+                "unique_count": unique_count,
+                "sample_col": auto_col,
+                "df": candidate,
+                "message": (
+                    "No existing sample identifier was better than the generated one, so "
+                    f"`{auto_col}` was generated from {' + '.join(cols)} "
+                    f"({valid_count} of {total_count} groups have valid capillary curves)."
+                ),
+            })
+
+    if ranked_ids:
+        ranked_ids.sort(
+            reverse=True,
+            key=lambda item: (item["valid_count"], item["unique_count"]),
+        )
+        selected = ranked_ids[0]
+        return selected["df"], selected["sample_col"], selected["message"]
+
+    raise ValueError(
+        "No valid core/plug sample identifier could be found or generated. "
+        "Provide a column such as `Core_ID`, `SampleID`, `Plug_ID`, `ID`, or "
+        "`ReferenceName`, or provide columns such as `WellName_2` + `Plug No` so "
+        "the app can build `Core_ID`. Each core/plug must have at least two valid "
+        "`SW_STRESS_CORR` and `PC_STRESS_CORR` points."
+    )
 
 
 def _clean_input(df):
@@ -282,12 +370,103 @@ def _assign_types_to_rows(df, sample_features, sample_col):
     return typed
 
 
-def _plot_capillary_curves(df, sample_col=None):
+def _subcluster_selected_type(sample_features, feature_cols, parent_type, n_subtypes, random_state):
+    refined = sample_features.copy()
+    refined["SecondaryPoreType"] = np.nan
+    refined["RefinedPoreType"] = refined["AutoPoreType"].astype(int).astype(str)
+
+    mask = refined["AutoPoreType"] == parent_type
+    subset = refined[mask].copy()
+
+    n_subtypes = int(min(n_subtypes, len(subset)))
+    if n_subtypes < 2:
+        raise ValueError(
+            f"Type {int(parent_type)} has only {len(subset)} valid sample. "
+            "At least two samples are required for secondary classification."
+        )
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(subset[feature_cols])
+
+    model = KMeans(n_clusters=n_subtypes, random_state=random_state, n_init=20)
+    raw_subcluster = model.fit_predict(X_scaled)
+    subset["RawSubCluster"] = raw_subcluster
+
+    subcluster_order = (
+        subset.groupby("RawSubCluster")["FZI_median"]
+        .median()
+        .sort_values()
+        .index
+        .tolist()
+    )
+    subcluster_to_type = {cluster: i + 1 for i, cluster in enumerate(subcluster_order)}
+    subset["SecondaryPoreType"] = subset["RawSubCluster"].map(subcluster_to_type).astype(int)
+    subset["RefinedPoreType"] = (
+        subset["AutoPoreType"].astype(int).astype(str)
+        + "."
+        + subset["SecondaryPoreType"].astype(str)
+    )
+
+    refined.loc[mask, "SecondaryPoreType"] = subset["SecondaryPoreType"]
+    refined.loc[mask, "RefinedPoreType"] = subset["RefinedPoreType"]
+    return refined
+
+
+def _assign_refined_types_to_rows(df, refined_features, sample_col):
+    cols = [sample_col, "SecondaryPoreType", "RefinedPoreType", "FinalPoreType"]
+    available_cols = [col for col in cols if col in refined_features.columns]
+    typed = df.merge(refined_features[available_cols], on=sample_col, how="left")
+    if "RefinedPoreType" not in typed.columns:
+        typed["RefinedPoreType"] = typed["AutoPoreType"].astype(int).astype(str)
+    if "FinalPoreType" not in typed.columns:
+        typed["FinalPoreType"] = typed["RefinedPoreType"]
+    return typed
+
+
+def _apply_merge_rules(refined_features, merge_rules):
+    merged = refined_features.copy()
+    merged["FinalPoreType"] = merged["RefinedPoreType"]
+
+    for selected_labels, new_label in merge_rules:
+        if not selected_labels or not str(new_label).strip():
+            continue
+        merged.loc[
+            merged["RefinedPoreType"].isin(selected_labels),
+            "FinalPoreType"
+        ] = str(new_label).strip()
+
+    return merged
+
+
+def _type_sort_key(label):
+    parts = str(label).split(".")
+    key = []
+    for part in parts:
+        try:
+            key.append((0, int(part)))
+        except ValueError:
+            key.append((1, part))
+    return tuple(key)
+
+
+def _plot_capillary_curves(df, sample_col=None, type_col="AutoPoreType", title=None):
     fig = go.Figure()
 
-    for t in sorted(df["AutoPoreType"].dropna().unique()):
-        group = df[df["AutoPoreType"] == t].copy()
-        color = COLOR_MAP.get(int(t), "gray")
+    if type_col not in df.columns:
+        return fig
+
+    type_values = sorted(
+        df[type_col].dropna().astype(str).unique(),
+        key=_type_sort_key
+    )
+
+    for type_index, t in enumerate(type_values):
+        group = df[df[type_col].astype(str) == t].copy()
+        base_type = str(t).split(".")[0]
+        try:
+            color = COLOR_MAP.get(int(base_type), "gray")
+        except ValueError:
+            color = COLOR_MAP.get((type_index % len(COLOR_MAP)) + 1, "gray")
 
         if sample_col in group.columns:
             sample_groups = group.groupby(sample_col, dropna=False)
@@ -316,19 +495,19 @@ def _plot_capillary_curves(df, sample_col=None):
                     y=y_smooth,
                     mode="lines",
                     line=dict(width=1, color=color),
-                    name=f"Type {int(t)}",
-                    legendgroup=f"Type {int(t)}",
+                    name=f"Type {t}",
+                    legendgroup=f"Type {t}",
                     showlegend=(i == 0)
                 )
             )
 
     fig.update_layout(
-        title="Mercury Injection Capillary Pressure Curves by Autonomous Pore Type",
+        title=title or "Mercury Injection Capillary Pressure Curves by Autonomous Pore Type",
         xaxis_title="Water Saturation / Mercury Saturation Proxy (fraction)",
         yaxis_title="Capillary Pressure (Pc)",
         yaxis=dict(type="log"),
         plot_bgcolor="white",
-        legend=dict(title="Auto Type")
+        legend=dict(title=type_col)
     )
     fig.update_xaxes(showgrid=True, gridcolor="lightgray")
     fig.update_yaxes(showgrid=True, gridcolor="lightgray")
@@ -599,10 +778,14 @@ def run():
         st.error("No valid data after cleaning. Please check numeric ranges and required columns.")
         return
 
-    sample_col = _find_sample_col(df)
-    if sample_col is None:
-        df["__SampleKey"] = np.arange(len(df))
-        sample_col = "__SampleKey"
+    try:
+        df, sample_col, sample_message = _auto_assign_sample_identifier(df)
+    except Exception as exc:
+        st.error(str(exc))
+        return
+
+    if sample_message:
+        st.info(sample_message)
 
     with st.sidebar:
         st.markdown("### Autonomous Classification Settings")
@@ -676,6 +859,104 @@ def run():
             "Carbonate version: each sample is drawn as a continuous log-Pc interpolated curve. "
             "The classification includes capillary-pressure shape metrics such as entry/tail "
             "pressure, curve span, segment slopes, and slope complexity."
+        )
+
+        st.markdown("### Secondary classification and merge")
+
+        available_types = sorted(df_classified["AutoPoreType"].dropna().unique())
+        selected_parent_type = st.selectbox(
+            "Primary type to split",
+            options=available_types,
+            format_func=lambda value: f"Type {int(value)}",
+            key="secondary_parent_type"
+        )
+
+        parent_sample_count = int(
+            (sample_features["AutoPoreType"] == selected_parent_type).sum()
+        )
+        max_subtypes = min(6, parent_sample_count)
+
+        if parent_sample_count < 2:
+            st.warning(
+                f"Type {int(selected_parent_type)} has only {parent_sample_count} sample, "
+                "so it cannot be split further."
+            )
+            refined_features = sample_features.copy()
+            refined_features["RefinedPoreType"] = refined_features["AutoPoreType"].astype(int).astype(str)
+            refined_features["FinalPoreType"] = refined_features["RefinedPoreType"]
+        else:
+            requested_subtypes = st.slider(
+                "Number of secondary subtypes",
+                min_value=2,
+                max_value=max_subtypes,
+                value=min(2, max_subtypes),
+                step=1,
+                key="secondary_type_count"
+            )
+
+            try:
+                refined_features = _subcluster_selected_type(
+                    sample_features,
+                    feature_cols,
+                    selected_parent_type,
+                    requested_subtypes,
+                    int(random_state)
+                )
+            except Exception as exc:
+                st.error(str(exc))
+                refined_features = sample_features.copy()
+                refined_features["RefinedPoreType"] = refined_features["AutoPoreType"].astype(int).astype(str)
+                refined_features["FinalPoreType"] = refined_features["RefinedPoreType"]
+
+        refined_labels = sorted(
+            refined_features["RefinedPoreType"].dropna().astype(str).unique(),
+            key=_type_sort_key
+        )
+
+        merge_rule_count = st.number_input(
+            "Number of merge rules",
+            min_value=0,
+            max_value=5,
+            value=0,
+            step=1,
+            key="merge_rule_count"
+        )
+
+        merge_rules = []
+        for i in range(int(merge_rule_count)):
+            cols = st.columns([2, 1])
+            with cols[0]:
+                selected_labels = st.multiselect(
+                    f"Types to merge #{i + 1}",
+                    options=refined_labels,
+                    key=f"merge_labels_{i}"
+                )
+            with cols[1]:
+                default_label = f"M{i + 1}"
+                new_label = st.text_input(
+                    f"New type #{i + 1}",
+                    value=default_label,
+                    key=f"merge_name_{i}"
+                )
+            merge_rules.append((selected_labels, new_label))
+
+        refined_features = _apply_merge_rules(refined_features, merge_rules)
+        df_refined = _assign_refined_types_to_rows(df_classified, refined_features, sample_col)
+
+        curve_type_col = st.radio(
+            "Curve grouping",
+            options=["FinalPoreType", "RefinedPoreType", "AutoPoreType"],
+            horizontal=True,
+            key="secondary_curve_type_col"
+        )
+        st.plotly_chart(
+            _plot_capillary_curves(
+                df_refined,
+                sample_col,
+                type_col=curve_type_col,
+                title=f"Capillary Pressure Curves by {curve_type_col}"
+            ),
+            use_container_width=True
         )
 
     with tab2:
