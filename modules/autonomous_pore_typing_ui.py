@@ -4,6 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
@@ -34,6 +35,8 @@ FEATURE_MARKER_SIZE = 6
 CURVE_INTERPOLATION_POINTS = 160
 CARBONATE_PC_SATURATIONS = [0.10, 0.25, 0.50, 0.75, 0.90]
 PORE_RADIUS_BINS = 40
+AUTO_CLUSTER_MIN = 2
+AUTO_CLUSTER_MAX = 8
 
 
 def _style_figure(fig, legend_title=None):
@@ -320,16 +323,91 @@ def _build_sample_feature_table(df, sample_col):
     return sample_features, sample_col, feature_cols
 
 
-def _cluster_samples(sample_features, feature_cols, n_clusters, random_state):
-    n_clusters = int(min(n_clusters, len(sample_features)))
-    if n_clusters < 2:
+def _choose_autonomous_cluster_count(X_scaled, random_state):
+    sample_count = len(X_scaled)
+    if sample_count < 2:
         raise ValueError(
             f"At least two valid samples are required for autonomous classification; "
-            f"only {len(sample_features)} valid sample is available."
+            f"only {sample_count} valid sample is available."
         )
 
+    if sample_count == 2:
+        diagnostics = pd.DataFrame([{
+            "ClusterCount": 2,
+            "Silhouette": np.nan,
+            "MinClusterSize": 1,
+            "BalanceScore": 1.0,
+            "SelectionScore": np.nan,
+        }])
+        return 2, diagnostics
+
+    max_clusters = min(AUTO_CLUSTER_MAX, sample_count - 1)
+    candidate_rows = []
+
+    for candidate_count in range(AUTO_CLUSTER_MIN, max_clusters + 1):
+        model = KMeans(
+            n_clusters=candidate_count,
+            random_state=random_state,
+            n_init=20
+        )
+        labels = model.fit_predict(X_scaled)
+        cluster_sizes = np.bincount(labels, minlength=candidate_count)
+        min_cluster_size = int(cluster_sizes.min())
+        expected_cluster_size = sample_count / candidate_count
+        balance_score = min(min_cluster_size / expected_cluster_size, 1.0)
+
+        if len(np.unique(labels)) < 2:
+            silhouette = np.nan
+            selection_score = -np.inf
+        else:
+            silhouette = silhouette_score(X_scaled, labels)
+            selection_score = silhouette + (0.08 * balance_score) - (0.03 * (candidate_count - 2))
+
+        candidate_rows.append({
+            "ClusterCount": candidate_count,
+            "Silhouette": silhouette,
+            "MinClusterSize": min_cluster_size,
+            "BalanceScore": balance_score,
+            "SelectionScore": selection_score,
+        })
+
+    diagnostics = pd.DataFrame(candidate_rows)
+    valid_diagnostics = diagnostics.replace([np.inf, -np.inf], np.nan).dropna(
+        subset=["SelectionScore"]
+    )
+    if valid_diagnostics.empty:
+        return AUTO_CLUSTER_MIN, diagnostics
+
+    best_row = valid_diagnostics.sort_values(
+        ["SelectionScore", "Silhouette", "BalanceScore"],
+        ascending=False
+    ).iloc[0]
+    return int(best_row["ClusterCount"]), diagnostics
+
+
+def _cluster_samples(sample_features, feature_cols, random_state, n_clusters=None):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(sample_features[feature_cols])
+
+    if n_clusters is None:
+        n_clusters, cluster_diagnostics = _choose_autonomous_cluster_count(
+            X_scaled,
+            random_state
+        )
+    else:
+        n_clusters = int(min(n_clusters, len(sample_features)))
+        if n_clusters < 2:
+            raise ValueError(
+                f"At least two valid samples are required for autonomous classification; "
+                f"only {len(sample_features)} valid sample is available."
+            )
+        cluster_diagnostics = pd.DataFrame([{
+            "ClusterCount": n_clusters,
+            "Silhouette": np.nan,
+            "MinClusterSize": np.nan,
+            "BalanceScore": np.nan,
+            "SelectionScore": np.nan,
+        }])
 
     model = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=20)
     raw_cluster = model.fit_predict(X_scaled)
@@ -353,7 +431,7 @@ def _cluster_samples(sample_features, feature_cols, n_clusters, random_state):
         sample_features["PCA1"] = xy[:, 0]
         sample_features["PCA2"] = xy[:, 1]
 
-    return sample_features, model, scaler
+    return sample_features, model, scaler, cluster_diagnostics
 
 
 def _assign_types_to_rows(df, sample_features, sample_col):
@@ -701,7 +779,7 @@ def _plot_capillary_curves(df, sample_col=None, type_col="AutoPoreType", title=N
     return fig
 
 
-def _plot_pore_throat_radius_distribution(df, sample_col=None, type_col="AutoPoreType"):
+def _plot_pore_throat_radius_distribution(df, sample_col=None, type_col="AutoPoreType", title=None):
     if "PTR_P" not in df.columns or "PORE_V_P" not in df.columns:
         return None
 
@@ -761,7 +839,7 @@ def _plot_pore_throat_radius_distribution(df, sample_col=None, type_col="AutoPor
             )
 
     fig.update_layout(
-        title="Pore Throat Radius Distribution Curves by Autonomous Pore Type",
+        title=title or "Pore Throat Radius Distribution Curves by Autonomous Pore Type",
         xaxis_title="Pore throat radius, PTR_P (um)",
         yaxis_title="PORE_V_P (%)",
         xaxis=dict(type="log")
@@ -1067,16 +1145,36 @@ def run():
     if sample_message:
         st.info(sample_message)
 
+    try:
+        sample_features, sample_col, feature_cols = _build_sample_feature_table(df, sample_col)
+    except Exception as exc:
+        st.error(str(exc))
+        return
+
     with st.sidebar:
         st.markdown("### Autonomous Classification Settings")
-        requested_clusters = st.slider(
-            "Number of autonomous pore types",
-            min_value=2,
-            max_value=8,
-            value=min(5, max(2, len(df))),
-            step=1,
-            key="auto_type_count"
+        classification_mode = st.radio(
+            "Classification mode",
+            options=["Automatic", "Manual"],
+            horizontal=True,
+            key="auto_classification_mode"
         )
+        requested_clusters = None
+        if classification_mode == "Automatic":
+            st.caption(
+                "The number of pore types is selected automatically from the data "
+                "using capillary-curve feature separation and cluster balance."
+            )
+        else:
+            max_manual_clusters = min(AUTO_CLUSTER_MAX, len(sample_features))
+            requested_clusters = st.slider(
+                "Number of autonomous pore types",
+                min_value=AUTO_CLUSTER_MIN,
+                max_value=max_manual_clusters,
+                value=min(5, max_manual_clusters),
+                step=1,
+                key="auto_type_count"
+            )
         random_state = st.number_input(
             "Random state",
             min_value=0,
@@ -1087,12 +1185,11 @@ def run():
         )
 
     try:
-        sample_features, sample_col, feature_cols = _build_sample_feature_table(df, sample_col)
-        sample_features, _, _ = _cluster_samples(
+        sample_features, _, _, cluster_diagnostics = _cluster_samples(
             sample_features,
             feature_cols,
-            requested_clusters,
-            int(random_state)
+            int(random_state),
+            n_clusters=requested_clusters
         )
         df_classified = _assign_types_to_rows(df, sample_features, sample_col)
     except Exception as exc:
@@ -1103,6 +1200,22 @@ def run():
         f"Autonomous classification completed: "
         f"{df_classified['AutoPoreType'].nunique()} pore types generated."
     )
+    if classification_mode == "Automatic":
+        max_candidate_count = (
+            AUTO_CLUSTER_MIN
+            if len(sample_features) == AUTO_CLUSTER_MIN
+            else min(AUTO_CLUSTER_MAX, len(sample_features) - 1)
+        )
+        st.info(
+            f"Automatic cluster selection chose {df_classified['AutoPoreType'].nunique()} "
+            f"pore types from {AUTO_CLUSTER_MIN}-{max_candidate_count} "
+            "candidate groups."
+        )
+    else:
+        st.info(
+            f"Manual cluster selection used {df_classified['AutoPoreType'].nunique()} "
+            "pore types."
+        )
 
     st.markdown("### Classified Data Preview")
     preview_cols = [
@@ -1125,15 +1238,31 @@ def run():
         mime="text/csv"
     )
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "Carbonate Capillary Pressure Curves",
-        "Pore Throat Radius Distribution",
+    tab1, tab2, tab3 = st.tabs([
+        "Capillary Curves & Pore Throat Radius",
         "Classification-Controlled FZI",
         "RCA FZI-Constrained Classification"
     ])
 
     with tab1:
-        st.plotly_chart(_plot_capillary_curves(df_classified, sample_col), use_container_width=True)
+        st.markdown("### Uncorrected classification")
+        raw_cols = st.columns(2)
+        with raw_cols[0]:
+            st.plotly_chart(
+                _plot_capillary_curves(df_classified, sample_col),
+                use_container_width=True
+            )
+        with raw_cols[1]:
+            raw_radius_fig = _plot_pore_throat_radius_distribution(
+                df_classified,
+                sample_col,
+                title="Pore Throat Radius Distribution Curves by Autonomous Pore Type"
+            )
+            if raw_radius_fig is not None:
+                st.plotly_chart(raw_radius_fig, use_container_width=True)
+            else:
+                st.warning("PTR_P and positive PORE_V_P values are required to draw pore throat distribution curves.")
+
         st.caption(
             "Carbonate version: each sample is drawn as a continuous log-Pc interpolated curve. "
             "The classification includes capillary-pressure shape metrics such as entry/tail "
@@ -1145,79 +1274,74 @@ def run():
             df_classified,
             sample_features,
             sample_col,
-            key_prefix="manual_capillary"
+            key_prefix="manual_combined"
         )
 
         selected_curve = df_corrected[
             df_corrected[sample_col].astype(str) == selected_sample_key
         ].copy()
-        st.plotly_chart(
-            _plot_capillary_curves(
+        st.markdown("### Selected curve")
+        selected_cols = st.columns(2)
+        with selected_cols[0]:
+            st.plotly_chart(
+                _plot_capillary_curves(
+                    selected_curve,
+                    sample_col,
+                    type_col="CorrectedPoreType",
+                    title="Selected Capillary Pressure Curve"
+                ),
+                use_container_width=True
+            )
+        with selected_cols[1]:
+            selected_radius_fig = _plot_pore_throat_radius_distribution(
                 selected_curve,
                 sample_col,
                 type_col="CorrectedPoreType",
-                title="Selected Capillary Pressure Curve"
-            ),
-            use_container_width=True
-        )
+                title="Selected Pore Throat Radius Distribution Curve"
+            )
+            if selected_radius_fig is not None:
+                st.plotly_chart(selected_radius_fig, use_container_width=True)
+            else:
+                st.warning("The selected curve does not have enough positive PTR_P and PORE_V_P points.")
 
         curve_type_col = st.radio(
-            "Curve grouping",
+            "Correction result grouping",
             options=["CorrectedPoreType", "AutoPoreType"],
             horizontal=True,
-            key="manual_curve_type_col"
+            key="manual_combined_type_col"
         )
-        st.plotly_chart(
-            _plot_capillary_curves(
+        st.markdown("### Correction result")
+        corrected_cols = st.columns(2)
+        with corrected_cols[0]:
+            st.plotly_chart(
+                _plot_capillary_curves(
+                    df_corrected,
+                    sample_col,
+                    type_col=curve_type_col,
+                    title=f"Capillary Pressure Curves by {curve_type_col}"
+                ),
+                use_container_width=True
+            )
+        with corrected_cols[1]:
+            radius_fig = _plot_pore_throat_radius_distribution(
                 df_corrected,
                 sample_col,
                 type_col=curve_type_col,
-                title=f"Capillary Pressure Curves by {curve_type_col}"
-            ),
-            use_container_width=True
-        )
+                title=f"Pore Throat Radius Distribution Curves by {curve_type_col}"
+            )
+            if radius_fig is not None:
+                st.plotly_chart(radius_fig, use_container_width=True)
+            else:
+                st.warning("PTR_P and positive PORE_V_P values are required to draw pore throat distribution curves.")
 
     with tab2:
-        st.markdown("### Manual classification correction")
-        radius_source, selected_radius_sample_key = _render_manual_type_correction_controls(
-            df_classified,
-            sample_features,
-            sample_col,
-            key_prefix="manual_radius"
-        )
-
-        selected_radius_curve = radius_source[
-            radius_source[sample_col].astype(str) == selected_radius_sample_key
-        ].copy()
-        selected_radius_fig = _plot_pore_throat_radius_distribution(
-            selected_radius_curve,
-            sample_col,
-            type_col="CorrectedPoreType"
-        )
-        if selected_radius_fig is not None:
-            st.plotly_chart(selected_radius_fig, use_container_width=True)
-        else:
-            st.warning("The selected curve does not have enough positive PTR_P and PORE_V_P points.")
-
-        radius_type_col = "CorrectedPoreType" if "CorrectedPoreType" in radius_source.columns else "AutoPoreType"
-        radius_fig = _plot_pore_throat_radius_distribution(
-            radius_source,
-            sample_col,
-            type_col=radius_type_col
-        )
-        if radius_fig is not None:
-            st.plotly_chart(radius_fig, use_container_width=True)
-        else:
-            st.warning("PTR_P and positive PORE_V_P values are required to draw pore throat distribution curves.")
-
-    with tab3:
         st.plotly_chart(_plot_class_controlled_fzi(df_classified), use_container_width=True)
         st.caption(
             "The FZI curves in this panel are controlled by the autonomous classification: "
             "each curve uses the median FZI of its classified pore type."
         )
 
-    with tab4:
+    with tab3:
         rca_fig = _plot_rca_fzi_constrained(df_classified)
         if rca_fig is not None:
             st.plotly_chart(rca_fig, use_container_width=True)
