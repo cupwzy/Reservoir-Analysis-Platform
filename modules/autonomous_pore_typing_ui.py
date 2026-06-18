@@ -894,16 +894,24 @@ def _plot_poroperm(df):
     return fig
 
 
-def _plot_class_controlled_fzi(df):
+def _plot_class_controlled_fzi(df, fzi_by_type=None):
     fig = go.Figure()
 
     phi = np.linspace(0.01, 0.4, 200)
-    class_fzi = (
-        df.groupby("AutoPoreType")["FZI"]
-        .median()
-        .dropna()
-        .sort_index()
-    )
+    if fzi_by_type is None:
+        class_fzi = (
+            df.groupby("AutoPoreType")["FZI"]
+            .median()
+            .dropna()
+            .sort_index()
+            .to_dict()
+        )
+    else:
+        class_fzi = {
+            int(type_id): float(fzi_value)
+            for type_id, fzi_value in fzi_by_type.items()
+            if pd.notna(fzi_value) and float(fzi_value) > 0
+        }
 
     for t in sorted(df["AutoPoreType"].dropna().unique()):
         group = df[df["AutoPoreType"] == t].copy()
@@ -919,7 +927,7 @@ def _plot_class_controlled_fzi(df):
             )
         )
 
-    for t, fzi_value in class_fzi.items():
+    for t, fzi_value in sorted(class_fzi.items()):
         k = 1014 * (fzi_value ** 2) * (phi ** 3) / ((1 - phi) ** 2)
         color = COLOR_MAP.get(int(t), "gray")
 
@@ -929,7 +937,7 @@ def _plot_class_controlled_fzi(df):
                 y=k,
                 mode="lines",
                 line=dict(color=color, width=2, dash="dash"),
-                name=f"Type {int(t)} median FZI={fzi_value:.2f}"
+                name=f"Type {int(t)} FZI={fzi_value:.2f}"
             )
         )
 
@@ -1081,6 +1089,39 @@ def _summary_table(df):
         .rename(columns={"AutoPoreType": "Type"})
     )
     return summary
+
+
+def _render_manual_fzi_inputs(df):
+    default_fzi = (
+        df.groupby("AutoPoreType")["FZI"]
+        .median()
+        .dropna()
+        .sort_index()
+    )
+    if default_fzi.empty:
+        return {}
+
+    st.markdown("### Manual FZI settings")
+    st.caption(
+        "Enter the FZI value used to draw each classification-controlled curve. "
+        "Defaults are filled from the current type median FZI, but the plotted curves use your inputs."
+    )
+
+    fzi_by_type = {}
+    columns = st.columns(min(4, len(default_fzi)))
+    for index, (type_id, default_value) in enumerate(default_fzi.items()):
+        with columns[index % len(columns)]:
+            fzi_by_type[int(type_id)] = st.number_input(
+                f"Type {int(type_id)} FZI",
+                min_value=0.0001,
+                max_value=1000.0,
+                value=float(default_value),
+                step=max(float(default_value) * 0.05, 0.01),
+                format="%.4f",
+                key=f"manual_fzi_type_{int(type_id)}"
+            )
+
+    return fzi_by_type
 
 
 def run():
@@ -1335,10 +1376,14 @@ def run():
                 st.warning("PTR_P and positive PORE_V_P values are required to draw pore throat distribution curves.")
 
     with tab2:
-        st.plotly_chart(_plot_class_controlled_fzi(df_classified), use_container_width=True)
+        manual_fzi_by_type = _render_manual_fzi_inputs(df_classified)
+        st.plotly_chart(
+            _plot_class_controlled_fzi(df_classified, manual_fzi_by_type),
+            use_container_width=True
+        )
         st.caption(
-            "The FZI curves in this panel are controlled by the autonomous classification: "
-            "each curve uses the median FZI of its classified pore type."
+            "The FZI curves in this panel are controlled by manually entered FZI values "
+            "for each autonomous pore type."
         )
 
     with tab3:
