@@ -894,13 +894,16 @@ def _plot_poroperm(df):
     return fig
 
 
-def _plot_class_controlled_fzi(df, fzi_by_type=None):
+def _plot_class_controlled_fzi(df, fzi_by_type=None, type_col="AutoPoreType"):
     fig = go.Figure()
+
+    if type_col not in df.columns:
+        type_col = "AutoPoreType"
 
     phi = np.linspace(0.01, 0.4, 200)
     if fzi_by_type is None:
         class_fzi = (
-            df.groupby("AutoPoreType")["FZI"]
+            df.groupby(type_col)["FZI"]
             .median()
             .dropna()
             .sort_index()
@@ -908,14 +911,27 @@ def _plot_class_controlled_fzi(df, fzi_by_type=None):
         )
     else:
         class_fzi = {
-            int(type_id): float(fzi_value)
+            str(type_id): float(fzi_value)
             for type_id, fzi_value in fzi_by_type.items()
             if pd.notna(fzi_value) and float(fzi_value) > 0
         }
 
-    for t in sorted(df["AutoPoreType"].dropna().unique()):
-        group = df[df["AutoPoreType"] == t].copy()
-        color = COLOR_MAP.get(int(t), "gray")
+    type_values = sorted(
+        df[type_col].dropna().astype(str).unique(),
+        key=_type_sort_key
+    )
+
+    for type_index, t in enumerate(type_values):
+        group = df[df[type_col].astype(str) == t].copy()
+        base_type = str(t).split(".")[0]
+        try:
+            base_type_number = int(base_type)
+            color = COLOR_MAP.get(
+                base_type_number,
+                COLOR_MAP.get(((base_type_number - 1) % len(COLOR_MAP)) + 1, "gray")
+            )
+        except ValueError:
+            color = COLOR_MAP.get((type_index % len(COLOR_MAP)) + 1, "gray")
 
         fig.add_trace(
             go.Scatter(
@@ -923,13 +939,21 @@ def _plot_class_controlled_fzi(df, fzi_by_type=None):
                 y=group["CKH_clean"],
                 mode="markers",
                 marker=dict(size=SCATTER_MARKER_SIZE, color=color, opacity=0.42),
-                name=f"Type {int(t)}"
+                name=f"Type {t}"
             )
         )
 
-    for t, fzi_value in sorted(class_fzi.items()):
+    for type_index, (t, fzi_value) in enumerate(sorted(class_fzi.items(), key=lambda item: _type_sort_key(item[0]))):
         k = 1014 * (fzi_value ** 2) * (phi ** 3) / ((1 - phi) ** 2)
-        color = COLOR_MAP.get(int(t), "gray")
+        base_type = str(t).split(".")[0]
+        try:
+            base_type_number = int(base_type)
+            color = COLOR_MAP.get(
+                base_type_number,
+                COLOR_MAP.get(((base_type_number - 1) % len(COLOR_MAP)) + 1, "gray")
+            )
+        except ValueError:
+            color = COLOR_MAP.get((type_index % len(COLOR_MAP)) + 1, "gray")
 
         fig.add_trace(
             go.Scatter(
@@ -937,7 +961,7 @@ def _plot_class_controlled_fzi(df, fzi_by_type=None):
                 y=k,
                 mode="lines",
                 line=dict(color=color, width=2, dash="dash"),
-                name=f"Type {int(t)} FZI={fzi_value:.2f}"
+                name=f"Type {t} FZI={fzi_value:.2f}"
             )
         )
 
@@ -948,17 +972,40 @@ def _plot_class_controlled_fzi(df, fzi_by_type=None):
         xaxis=dict(range=[0, 0.4]),
         yaxis=dict(type="log", range=[-3, 4])
     )
-    _style_figure(fig, legend_title="Auto Type / FZI")
+    _style_figure(fig, legend_title=f"{type_col} / FZI")
 
     return fig
 
 
-def _plot_rca_fzi_constrained(df):
+def _color_for_type(type_label, type_index=0):
+    base_type = str(type_label).split(".")[0]
+    try:
+        base_type_number = int(base_type)
+        return COLOR_MAP.get(
+            base_type_number,
+            COLOR_MAP.get(((base_type_number - 1) % len(COLOR_MAP)) + 1, "gray")
+        )
+    except ValueError:
+        return COLOR_MAP.get((type_index % len(COLOR_MAP)) + 1, "gray")
+
+
+def _plot_rca_fzi_constrained(df, fzi_by_type=None, type_col="AutoPoreType"):
+    if type_col not in df.columns:
+        type_col = "AutoPoreType"
+
+    manual_fzi = {}
+    if fzi_by_type:
+        manual_fzi = {
+            str(type_id): float(fzi_value)
+            for type_id, fzi_value in fzi_by_type.items()
+            if pd.notna(fzi_value) and float(fzi_value) > 0
+        }
+
     valid = df[
         (df["CPOR_clean"] > 0) &
         (df["CPOR_clean"] < 1) &
         (df["CKH_clean"] > 0) &
-        df["AutoPoreType"].notna()
+        df[type_col].notna()
     ].copy()
     if valid.empty:
         return None
@@ -981,9 +1028,14 @@ def _plot_rca_fzi_constrained(df):
             )
         )
 
-    for t in sorted(valid["AutoPoreType"].dropna().unique()):
-        group = valid[valid["AutoPoreType"] == t].copy()
-        color = COLOR_MAP.get(int(t), "gray")
+    type_values = sorted(
+        valid[type_col].dropna().astype(str).unique(),
+        key=_type_sort_key
+    )
+
+    for type_index, t in enumerate(type_values):
+        group = valid[valid[type_col].astype(str) == t].copy()
+        color = _color_for_type(t, type_index)
 
         fig.add_trace(
             go.Scatter(
@@ -991,8 +1043,8 @@ def _plot_rca_fzi_constrained(df):
                 y=group["CKH_clean"],
                 mode="markers",
                 marker=dict(size=SCATTER_MARKER_SIZE, color=color, opacity=0.58),
-                name=f"Type {int(t)}",
-                legendgroup=f"Type {int(t)}",
+                name=f"Type {t}",
+                legendgroup=f"Type {t}",
             )
         )
 
@@ -1006,9 +1058,9 @@ def _plot_rca_fzi_constrained(df):
         phi_fit = np.linspace(x.min(), x.max(), 120)
         k_fit = 10 ** (slope * phi_fit + intercept)
 
-        fzi_median = group["FZI"].median()
-        lower_fzi = np.nanpercentile(group["FZI"], 10)
-        upper_fzi = np.nanpercentile(group["FZI"], 90)
+        fzi_center = manual_fzi.get(str(t), group["FZI"].median())
+        lower_fzi = fzi_center * 0.75
+        upper_fzi = fzi_center * 1.25
         lower_curve = 1014 * (lower_fzi ** 2) * (phi_fit ** 3) / ((1 - phi_fit) ** 2)
         upper_curve = 1014 * (upper_fzi ** 2) * (phi_fit ** 3) / ((1 - phi_fit) ** 2)
         k_fit = np.clip(k_fit, lower_curve, upper_curve)
@@ -1019,11 +1071,11 @@ def _plot_rca_fzi_constrained(df):
                 y=k_fit,
                 mode="lines",
                 line=dict(color=color, width=2),
-                name=f"Type {int(t)} RCA fit",
-                legendgroup=f"Type {int(t)}",
+                name=f"Type {t} RCA fit",
+                legendgroup=f"Type {t}",
                 hovertemplate=(
-                    f"Type {int(t)} RCA fit<br>"
-                    f"Median FZI={fzi_median:.2f}<br>"
+                    f"Type {t} RCA fit<br>"
+                    f"FZI constraint={fzi_center:.2f}<br>"
                     "CPOR=%{x:.3f}<br>CKH=%{y:.3g}<extra></extra>"
                 ),
             )
@@ -1038,7 +1090,7 @@ def _plot_rca_fzi_constrained(df):
         xaxis=dict(range=[0, max(0.35, valid["CPOR_clean"].max() * 1.05)]),
         yaxis=dict(type="log", range=[np.log10(y_min), np.log10(y_max)])
     )
-    _style_figure(fig, legend_title="Auto Type / RCA")
+    _style_figure(fig, legend_title=f"{type_col} / RCA")
     fig.update_xaxes(mirror=True, showline=True, linecolor=COLORS["ink"])
     fig.update_yaxes(mirror=True, showline=True, linecolor=COLORS["ink"])
 
@@ -1091,13 +1143,25 @@ def _summary_table(df):
     return summary
 
 
-def _render_manual_fzi_inputs(df):
+def _safe_widget_key(value):
+    return "".join(
+        char if char.isalnum() else "_"
+        for char in str(value)
+    )
+
+
+def _render_manual_fzi_inputs(df, type_col="AutoPoreType"):
+    if type_col not in df.columns:
+        type_col = "AutoPoreType"
+
     default_fzi = (
-        df.groupby("AutoPoreType")["FZI"]
+        df.groupby(type_col)["FZI"]
         .median()
         .dropna()
-        .sort_index()
     )
+    default_fzi = default_fzi.loc[
+        sorted(default_fzi.index, key=_type_sort_key)
+    ]
     if default_fzi.empty:
         return {}
 
@@ -1111,14 +1175,15 @@ def _render_manual_fzi_inputs(df):
     columns = st.columns(min(4, len(default_fzi)))
     for index, (type_id, default_value) in enumerate(default_fzi.items()):
         with columns[index % len(columns)]:
-            fzi_by_type[int(type_id)] = st.number_input(
-                f"Type {int(type_id)} FZI",
+            type_label = str(type_id)
+            fzi_by_type[type_label] = st.number_input(
+                f"Type {type_label} FZI",
                 min_value=0.0001,
                 max_value=1000.0,
                 value=float(default_value),
                 step=max(float(default_value) * 0.05, 0.01),
                 format="%.4f",
-                key=f"manual_fzi_type_{int(type_id)}"
+                key=f"manual_fzi_{type_col}_{_safe_widget_key(type_label)}"
             )
 
     return fzi_by_type
@@ -1376,18 +1441,28 @@ def run():
                 st.warning("PTR_P and positive PORE_V_P values are required to draw pore throat distribution curves.")
 
     with tab2:
-        manual_fzi_by_type = _render_manual_fzi_inputs(df_classified)
+        fzi_source = df_corrected if "df_corrected" in locals() else df_classified
+        fzi_type_col = "CorrectedPoreType" if "CorrectedPoreType" in fzi_source.columns else "AutoPoreType"
+        manual_fzi_by_type = _render_manual_fzi_inputs(fzi_source, type_col=fzi_type_col)
         st.plotly_chart(
-            _plot_class_controlled_fzi(df_classified, manual_fzi_by_type),
+            _plot_class_controlled_fzi(
+                fzi_source,
+                manual_fzi_by_type,
+                type_col=fzi_type_col
+            ),
             use_container_width=True
         )
         st.caption(
             "The FZI curves in this panel are controlled by manually entered FZI values "
-            "for each autonomous pore type."
+            "for each corrected pore type."
         )
 
     with tab3:
-        rca_fig = _plot_rca_fzi_constrained(df_classified)
+        rca_fig = _plot_rca_fzi_constrained(
+            fzi_source,
+            manual_fzi_by_type,
+            type_col=fzi_type_col
+        )
         if rca_fig is not None:
             st.plotly_chart(rca_fig, use_container_width=True)
         else:
