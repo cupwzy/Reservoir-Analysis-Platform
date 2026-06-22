@@ -37,6 +37,7 @@ CARBONATE_PC_SATURATIONS = [0.10, 0.25, 0.50, 0.75, 0.90]
 PORE_RADIUS_BINS = 40
 AUTO_CLUSTER_MIN = 2
 AUTO_CLUSTER_MAX = 8
+WASHBURN_RADIUS_CONSTANT_UM_MPA = 0.735
 
 
 def _style_figure(fig, legend_title=None):
@@ -779,14 +780,88 @@ def _plot_capillary_curves(df, sample_col=None, type_col="AutoPoreType", title=N
     return fig
 
 
+def _build_washburn_pore_throat_curve(sample_group):
+    if "PC_STRESS_CORR" not in sample_group.columns or "SW_STRESS_CORR" not in sample_group.columns:
+        return pd.DataFrame(), None
+
+    micp_curve = (
+        sample_group[["PC_STRESS_CORR", "SW_STRESS_CORR"]]
+        .dropna()
+        .query("PC_STRESS_CORR > 0 and SW_STRESS_CORR >= 0 and SW_STRESS_CORR <= 1")
+        .groupby("PC_STRESS_CORR", as_index=False)["SW_STRESS_CORR"]
+        .median()
+        .sort_values("PC_STRESS_CORR")
+    )
+    if len(micp_curve) < 3:
+        return pd.DataFrame(), None
+
+    pressure = micp_curve["PC_STRESS_CORR"].to_numpy()
+    saturation = micp_curve["SW_STRESS_CORR"].to_numpy()
+    radius = WASHBURN_RADIUS_CONSTANT_UM_MPA / pressure
+
+    radius_mid = np.sqrt(radius[:-1] * radius[1:])
+    pore_volume = np.abs(np.diff(saturation)) * 100
+    valid = np.isfinite(radius_mid) & np.isfinite(pore_volume) & (radius_mid > 0) & (pore_volume > 0)
+    if valid.sum() < 2:
+        return pd.DataFrame(), None
+
+    washburn_curve = pd.DataFrame({
+        "PTR_P": radius_mid[valid],
+        "PORE_V_P": pore_volume[valid],
+    })
+    washburn_curve = (
+        washburn_curve
+        .groupby("PTR_P", as_index=False)["PORE_V_P"]
+        .sum()
+        .sort_values("PTR_P")
+    )
+    total_volume = washburn_curve["PORE_V_P"].sum()
+    if np.isfinite(total_volume) and total_volume > 0:
+        washburn_curve["PORE_V_P"] = washburn_curve["PORE_V_P"] / total_volume * 100
+
+    return washburn_curve, "Washburn from MICP"
+
+
+def _build_measured_pore_throat_curve(sample_group):
+    if "PTR_P" not in sample_group.columns or "PORE_V_P" not in sample_group.columns:
+        return pd.DataFrame(), None
+
+    measured_curve = (
+        sample_group[["PTR_P", "PORE_V_P"]]
+        .dropna()
+        .query("PTR_P > 0 and PORE_V_P > 0")
+        .groupby("PTR_P", as_index=False)["PORE_V_P"]
+        .sum()
+        .sort_values("PTR_P")
+    )
+    if len(measured_curve) < 4:
+        return pd.DataFrame(), None
+
+    total_volume = measured_curve["PORE_V_P"].sum()
+    if not np.isfinite(total_volume) or total_volume <= 0:
+        return pd.DataFrame(), None
+
+    measured_curve["PORE_V_P"] = measured_curve["PORE_V_P"] / total_volume * 100
+    return measured_curve, "measured PORE_V_P normalized"
+
+
+def _build_pore_throat_curve(sample_group):
+    washburn_curve, washburn_source = _build_washburn_pore_throat_curve(sample_group)
+    if len(washburn_curve) >= 2:
+        return washburn_curve, washburn_source
+
+    return _build_measured_pore_throat_curve(sample_group)
+
+
 def _plot_pore_throat_radius_distribution(df, sample_col=None, type_col="AutoPoreType", title=None):
-    if "PTR_P" not in df.columns or "PORE_V_P" not in df.columns:
+    if "PC_STRESS_CORR" not in df.columns or "SW_STRESS_CORR" not in df.columns:
         return None
 
     valid = df[
-        (df["PTR_P"] > 0) &
-        (df["PORE_V_P"] > 0) &
-        df[type_col].notna()
+        (df["PC_STRESS_CORR"] > 0)
+        & (df["SW_STRESS_CORR"] >= 0)
+        & (df["SW_STRESS_CORR"] <= 1)
+        & df[type_col].notna()
     ].copy()
     if valid.empty:
         return None
@@ -815,17 +890,13 @@ def _plot_pore_throat_radius_distribution(df, sample_col=None, type_col="AutoPor
         else:
             sample_groups = [(None, group)]
 
-        for i, (_, sample_group) in enumerate(sample_groups):
-            sample_curve = (
-                sample_group[["PTR_P", "PORE_V_P"]]
-                .dropna()
-                .groupby("PTR_P", as_index=False)["PORE_V_P"]
-                .sum()
-                .sort_values("PTR_P")
-            )
+        legend_shown = False
+        for _, (sample_id, sample_group) in enumerate(sample_groups):
+            sample_curve, curve_source = _build_pore_throat_curve(sample_group)
             if len(sample_curve) < 2:
                 continue
 
+            sample_text = str(sample_id) if sample_id is not None else "N/A"
             fig.add_trace(
                 go.Scatter(
                     x=sample_curve["PTR_P"],
@@ -834,9 +905,22 @@ def _plot_pore_throat_radius_distribution(df, sample_col=None, type_col="AutoPor
                     line=dict(width=1, color=color),
                     name=f"Type {t}",
                     legendgroup=f"Type {t}",
-                    showlegend=(i == 0)
+                    showlegend=not legend_shown,
+                    customdata=np.column_stack([
+                        np.repeat(sample_text, len(sample_curve)),
+                        np.repeat(str(t), len(sample_curve)),
+                        np.repeat(curve_source or "N/A", len(sample_curve)),
+                    ]),
+                    hovertemplate=(
+                        "Sample: %{customdata[0]}<br>"
+                        "Type: %{customdata[1]}<br>"
+                        "Source: %{customdata[2]}<br>"
+                        "PTR_P: %{x:.4g}<br>"
+                        "PORE_V_P: %{y:.4g}<extra></extra>"
+                    )
                 )
             )
+            legend_shown = True
 
     fig.update_layout(
         title=title or "Pore Throat Radius Distribution Curves by Autonomous Pore Type",
@@ -847,6 +931,52 @@ def _plot_pore_throat_radius_distribution(df, sample_col=None, type_col="AutoPor
     _style_figure(fig, legend_title=type_col)
 
     return fig
+
+
+def _curve_correspondence_summary(df, sample_col, type_col):
+    if sample_col not in df.columns or type_col not in df.columns:
+        return pd.DataFrame()
+
+    rows = []
+    type_values = sorted(
+        df[type_col].dropna().astype(str).unique(),
+        key=_type_sort_key
+    )
+    for t in type_values:
+        group = df[df[type_col].astype(str) == t]
+        capillary_count = 0
+        pore_count = 0
+        washburn_count = 0
+        fallback_measured_count = 0
+
+        for _, sample_group in group.groupby(sample_col, dropna=False):
+            capillary_curve = (
+                sample_group[["SW_STRESS_CORR", "PC_STRESS_CORR"]]
+                .dropna()
+                .groupby("SW_STRESS_CORR", as_index=False)["PC_STRESS_CORR"]
+                .median()
+            )
+            if len(capillary_curve) >= 2:
+                capillary_count += 1
+
+            pore_curve, curve_source = _build_pore_throat_curve(sample_group)
+            if len(pore_curve) >= 2:
+                pore_count += 1
+                if curve_source == "Washburn from MICP":
+                    washburn_count += 1
+                elif curve_source == "measured PORE_V_P normalized":
+                    fallback_measured_count += 1
+
+        rows.append({
+            "Type": t,
+            "Capillary curves": capillary_count,
+            "Pore throat curves": pore_count,
+            "Washburn MICP curves": washburn_count,
+            "Fallback measured PORE_V_P curves": fallback_measured_count,
+            "Missing pore throat curves": max(capillary_count - pore_count, 0),
+        })
+
+    return pd.DataFrame(rows)
 
 
 def _plot_poroperm(df):
@@ -894,7 +1024,13 @@ def _plot_poroperm(df):
     return fig
 
 
-def _plot_class_controlled_fzi(df, fzi_by_type=None, type_col="AutoPoreType"):
+def _plot_class_controlled_fzi(
+    df,
+    fzi_by_type=None,
+    type_col="AutoPoreType",
+    title="Classification-Controlled FZI Curves",
+    porosity_cutoff=None
+):
     fig = go.Figure()
 
     if type_col not in df.columns:
@@ -923,37 +1059,22 @@ def _plot_class_controlled_fzi(df, fzi_by_type=None, type_col="AutoPoreType"):
 
     for type_index, t in enumerate(type_values):
         group = df[df[type_col].astype(str) == t].copy()
-        base_type = str(t).split(".")[0]
-        try:
-            base_type_number = int(base_type)
-            color = COLOR_MAP.get(
-                base_type_number,
-                COLOR_MAP.get(((base_type_number - 1) % len(COLOR_MAP)) + 1, "gray")
-            )
-        except ValueError:
-            color = COLOR_MAP.get((type_index % len(COLOR_MAP)) + 1, "gray")
+        color = _color_for_type(t, type_index)
+        marker_opacity = 0.30 if str(t) == "Invalid" else 0.42
 
         fig.add_trace(
             go.Scatter(
                 x=group["CPOR_clean"],
                 y=group["CKH_clean"],
                 mode="markers",
-                marker=dict(size=SCATTER_MARKER_SIZE, color=color, opacity=0.42),
-                name=f"Type {t}"
+                marker=dict(size=SCATTER_MARKER_SIZE, color=color, opacity=marker_opacity),
+                name="Invalid" if str(t) == "Invalid" else f"Type {t}"
             )
         )
 
     for type_index, (t, fzi_value) in enumerate(sorted(class_fzi.items(), key=lambda item: _type_sort_key(item[0]))):
         k = 1014 * (fzi_value ** 2) * (phi ** 3) / ((1 - phi) ** 2)
-        base_type = str(t).split(".")[0]
-        try:
-            base_type_number = int(base_type)
-            color = COLOR_MAP.get(
-                base_type_number,
-                COLOR_MAP.get(((base_type_number - 1) % len(COLOR_MAP)) + 1, "gray")
-            )
-        except ValueError:
-            color = COLOR_MAP.get((type_index % len(COLOR_MAP)) + 1, "gray")
+        color = _color_for_type(t, type_index)
 
         fig.add_trace(
             go.Scatter(
@@ -966,18 +1087,30 @@ def _plot_class_controlled_fzi(df, fzi_by_type=None, type_col="AutoPoreType"):
         )
 
     fig.update_layout(
-        title="Classification-Controlled FZI Curves",
+        title=title,
         xaxis_title="CPOR_clean (v/v)",
         yaxis_title="CKH_clean (mD)",
         xaxis=dict(range=[0, 0.4]),
         yaxis=dict(type="log", range=[-3, 4])
     )
+    if porosity_cutoff is not None:
+        fig.add_vline(
+            x=porosity_cutoff,
+            line_width=2,
+            line_dash="dot",
+            line_color=COLORS.get("accent_teal", COLORS["primary"]),
+            annotation_text=f"Porosity cutoff {porosity_cutoff:.3f}",
+            annotation_position="top left"
+        )
     _style_figure(fig, legend_title=f"{type_col} / FZI")
 
     return fig
 
 
 def _color_for_type(type_label, type_index=0):
+    if str(type_label) == "Invalid":
+        return "#7f7f7f"
+
     base_type = str(type_label).split(".")[0]
     try:
         base_type_number = int(base_type)
@@ -1189,6 +1322,109 @@ def _render_manual_fzi_inputs(df, type_col="AutoPoreType"):
     return fzi_by_type
 
 
+def _apply_fzi_validity_screen(df, type_col, porosity_cutoff, fzi_bounds_by_type):
+    screened = df.copy()
+    screened["FZIValidityType"] = screened[type_col].astype(str)
+
+    invalid_mask = screened["CPOR_clean"] < porosity_cutoff
+    for type_label, bounds in fzi_bounds_by_type.items():
+        lower_fzi, upper_fzi = bounds
+        type_mask = screened[type_col].astype(str) == str(type_label)
+        invalid_mask = invalid_mask | (
+            type_mask
+            & (
+                (screened["FZI"] < lower_fzi)
+                | (screened["FZI"] > upper_fzi)
+            )
+        )
+
+    screened.loc[invalid_mask, "FZIValidityType"] = "Invalid"
+    return screened
+
+
+def _render_fzi_validity_controls(df, type_col, fzi_by_type):
+    valid = df[
+        (df["CPOR_clean"] > 0)
+        & (df["CPOR_clean"] < 1)
+        & (df["FZI"] > 0)
+        & df[type_col].notna()
+    ].copy()
+    if valid.empty:
+        st.warning("Valid CPOR_clean and FZI values are required for FZI validity screening.")
+        return df.copy(), {}, 0.0
+
+    st.markdown("### FZI validity screening")
+    porosity_min = float(valid["CPOR_clean"].min())
+    porosity_max = float(valid["CPOR_clean"].max())
+    default_cutoff = max(0.0, min(0.05, porosity_max))
+    porosity_cutoff = st.number_input(
+        "Porosity cutoff",
+        min_value=0.0,
+        max_value=max(0.99, porosity_max),
+        value=default_cutoff,
+        step=0.005,
+        format="%.4f",
+        key=f"fzi_validity_porosity_cutoff_{type_col}"
+    )
+    st.caption(
+        "Points with CPOR_clean below this cutoff are assigned to Invalid. "
+        "For points to the right of the cutoff, each type is screened by its FZI lower and upper bounds."
+    )
+
+    type_values = sorted(
+        valid[type_col].dropna().astype(str).unique(),
+        key=_type_sort_key
+    )
+    fzi_bounds_by_type = {}
+    bound_cols = st.columns(2)
+    for index, type_label in enumerate(type_values):
+        group = valid[valid[type_col].astype(str) == type_label]
+        default_center = fzi_by_type.get(
+            type_label,
+            float(group["FZI"].median())
+        )
+        default_lower = max(0.0001, default_center * 0.75)
+        default_upper = max(default_lower + 0.0001, default_center * 1.25)
+
+        with bound_cols[index % len(bound_cols)]:
+            st.markdown(f"**Type {type_label} FZI bounds**")
+            lower_fzi = st.number_input(
+                f"Type {type_label} lower FZI",
+                min_value=0.0001,
+                max_value=1000.0,
+                value=float(default_lower),
+                step=max(default_center * 0.05, 0.01),
+                format="%.4f",
+                key=f"fzi_validity_lower_{type_col}_{_safe_widget_key(type_label)}"
+            )
+            upper_fzi = st.number_input(
+                f"Type {type_label} upper FZI",
+                min_value=0.0001,
+                max_value=1000.0,
+                value=float(default_upper),
+                step=max(default_center * 0.05, 0.01),
+                format="%.4f",
+                key=f"fzi_validity_upper_{type_col}_{_safe_widget_key(type_label)}"
+            )
+            if upper_fzi <= lower_fzi:
+                st.warning(f"Type {type_label}: upper FZI must be greater than lower FZI.")
+                upper_fzi = lower_fzi + 0.0001
+            fzi_bounds_by_type[type_label] = (lower_fzi, upper_fzi)
+
+    screened = _apply_fzi_validity_screen(
+        valid,
+        type_col,
+        porosity_cutoff,
+        fzi_bounds_by_type
+    )
+    invalid_count = int((screened["FZIValidityType"] == "Invalid").sum())
+    st.caption(
+        f"{invalid_count} of {len(screened)} point(s) are assigned to Invalid "
+        "after porosity and FZI-bound screening."
+    )
+    return screened, fzi_bounds_by_type, porosity_cutoff
+
+
 def run():
     st.header("Autonomous Carbonate Pore Throat Classification")
 
@@ -1207,8 +1443,8 @@ def run():
     - `SW_STRESS_CORR`: saturation fraction between 0 and 1
 
     Optional columns:
-    - `PTR_P`: pore throat radius
-    - `PORE_V_P`: pore volume, used as the weight for pore throat radius distribution when available
+    - `PTR_P`: pore throat radius, used only as a fallback/reference when MICP conversion is unavailable
+    - `PORE_V_P`: pore volume, used only as a fallback/reference when MICP conversion is unavailable
     - sample identifier, such as `SampleID`, `Plug`, `wellName`, or `Well`
     """)
 
@@ -1367,13 +1603,27 @@ def run():
             if raw_radius_fig is not None:
                 st.plotly_chart(raw_radius_fig, use_container_width=True)
             else:
-                st.warning("PTR_P and positive PORE_V_P values are required to draw pore throat distribution curves.")
+                st.warning("Valid PC_STRESS_CORR and SW_STRESS_CORR values are required to draw Washburn pore throat curves.")
 
         st.caption(
             "Carbonate version: each sample is drawn as a continuous log-Pc interpolated curve. "
             "The classification includes capillary-pressure shape metrics such as entry/tail "
             "pressure, curve span, segment slopes, and slope complexity."
         )
+        correspondence_summary = _curve_correspondence_summary(
+            df_classified,
+            sample_col,
+            "AutoPoreType"
+        )
+        if not correspondence_summary.empty:
+            with st.expander("Curve correspondence check", expanded=True):
+                st.dataframe(correspondence_summary, use_container_width=True)
+                st.caption(
+                    "If pore throat curves are fewer than capillary curves, the missing samples "
+                    "do not have enough pressure-saturation points for Washburn conversion. "
+                    "The pore throat plot is derived from MICP first; measured PTR_P/PORE_V_P "
+                    "is used only as a fallback."
+                )
 
         st.markdown("### Manual classification correction")
         df_corrected, selected_sample_key = _render_manual_type_correction_controls(
@@ -1408,7 +1658,7 @@ def run():
             if selected_radius_fig is not None:
                 st.plotly_chart(selected_radius_fig, use_container_width=True)
             else:
-                st.warning("The selected curve does not have enough positive PTR_P and PORE_V_P points.")
+                st.warning("The selected curve does not have enough pressure-saturation points for Washburn conversion.")
 
         curve_type_col = st.radio(
             "Correction result grouping",
@@ -1438,7 +1688,7 @@ def run():
             if radius_fig is not None:
                 st.plotly_chart(radius_fig, use_container_width=True)
             else:
-                st.warning("PTR_P and positive PORE_V_P values are required to draw pore throat distribution curves.")
+                st.warning("Valid PC_STRESS_CORR and SW_STRESS_CORR values are required to draw Washburn pore throat curves.")
 
     with tab2:
         fzi_source = df_corrected if "df_corrected" in locals() else df_classified
@@ -1455,6 +1705,31 @@ def run():
         st.caption(
             "The FZI curves in this panel are controlled by manually entered FZI values "
             "for each corrected pore type."
+        )
+        screened_fzi_source, _, porosity_cutoff = _render_fzi_validity_controls(
+            fzi_source,
+            fzi_type_col,
+            manual_fzi_by_type
+        )
+        screened_valid_types = {
+            type_label
+            for type_label in screened_fzi_source["FZIValidityType"].dropna().astype(str).unique()
+            if type_label != "Invalid"
+        }
+        screened_fzi_by_type = {
+            type_label: fzi_value
+            for type_label, fzi_value in manual_fzi_by_type.items()
+            if str(type_label) in screened_valid_types
+        }
+        st.plotly_chart(
+            _plot_class_controlled_fzi(
+                screened_fzi_source,
+                screened_fzi_by_type,
+                type_col="FZIValidityType",
+                title="FZI Validity-Screened Classification",
+                porosity_cutoff=porosity_cutoff
+            ),
+            use_container_width=True
         )
 
     with tab3:
