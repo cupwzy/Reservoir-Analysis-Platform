@@ -37,7 +37,11 @@ CARBONATE_PC_SATURATIONS = [0.10, 0.25, 0.50, 0.75, 0.90]
 PORE_RADIUS_BINS = 40
 AUTO_CLUSTER_MIN = 2
 AUTO_CLUSTER_MAX = 8
-WASHBURN_RADIUS_CONSTANT_UM_MPA = 0.735
+WASHBURN_IFT_DYNE_PER_CM = 480
+WASHBURN_CONTACT_ANGLE_DEG = 140
+PORE_RADIUS_MIN_UM = 0.001
+PORE_RADIUS_MAX_UM = 1000
+PORE_RADIUS_CLASSES_PER_DECADE = 15
 
 
 def _style_figure(fig, legend_title=None):
@@ -538,7 +542,7 @@ def _render_manual_type_correction_controls(df_classified, sample_features, samp
     }
 
     sample_lookup = (
-        sample_features[[sample_col, "AutoPoreType", "FZI_median"]]
+        sample_features[[sample_col, "AutoPoreType", "FZI_median", "Pc_slope_complexity"]]
         .copy()
         .sort_values(["AutoPoreType", sample_col])
     )
@@ -558,22 +562,25 @@ def _render_manual_type_correction_controls(df_classified, sample_features, samp
             key=f"{key_prefix}_filter_auto_types"
         )
 
-    fzi_min = float(sample_lookup["FZI_median"].min())
-    fzi_max = float(sample_lookup["FZI_median"].max())
+    complexity_min = float(sample_lookup["Pc_slope_complexity"].min())
+    complexity_max = float(sample_lookup["Pc_slope_complexity"].max())
     with filter_cols[1]:
-        if fzi_min < fzi_max:
-            fzi_range = st.slider(
-                "Filter by FZI",
-                min_value=fzi_min,
-                max_value=fzi_max,
-                value=(fzi_min, fzi_max),
-                step=max((fzi_max - fzi_min) / 100, 0.01),
-                format="%.2f",
-                key=f"{key_prefix}_filter_fzi"
+        if complexity_min < complexity_max:
+            complexity_range = st.slider(
+                "Filter by complexity",
+                min_value=complexity_min,
+                max_value=complexity_max,
+                value=(complexity_min, complexity_max),
+                step=max((complexity_max - complexity_min) / 100, 0.001),
+                format="%.3f",
+                key=f"{key_prefix}_filter_complexity"
             )
         else:
-            fzi_range = (fzi_min, fzi_max)
-            st.caption(f"FZI filter unavailable: all curves have FZI {fzi_min:.2f}.")
+            complexity_range = (complexity_min, complexity_max)
+            st.caption(
+                f"Complexity filter unavailable: all curves have "
+                f"Pc_slope_complexity {complexity_min:.3f}."
+            )
 
     with filter_cols[2]:
         sample_search = st.text_input(
@@ -585,7 +592,7 @@ def _render_manual_type_correction_controls(df_classified, sample_features, samp
 
     filtered_lookup = sample_lookup[
         sample_lookup["AutoPoreType"].isin(selected_filter_types)
-        & sample_lookup["FZI_median"].between(fzi_range[0], fzi_range[1])
+        & sample_lookup["Pc_slope_complexity"].between(complexity_range[0], complexity_range[1])
     ].copy()
     if sample_search:
         filtered_lookup = filtered_lookup[
@@ -600,7 +607,7 @@ def _render_manual_type_correction_controls(df_classified, sample_features, samp
     sample_labels = {
         row["__SampleKey"]: (
             f"{row[sample_col]} | Auto Type {int(row['AutoPoreType'])} | "
-            f"FZI {row['FZI_median']:.2f}"
+            f"FZI {row['FZI_median']:.2f} | Complexity {row['Pc_slope_complexity']:.3f}"
         )
         for _, row in sample_lookup.iterrows()
     }
@@ -743,7 +750,16 @@ def _plot_capillary_curves(df, sample_col=None, type_col="AutoPoreType", title=N
             y_smooth = 10 ** np.interp(x_smooth, x, y_log)
             fzi_value = sample_group["FZI"].median() if "FZI" in sample_group.columns else np.nan
             fzi_text = f"{fzi_value:.3f}" if np.isfinite(fzi_value) else "N/A"
+            shape_metrics = _carbonate_capillary_shape_metrics(sample_group)
+            pc_log_at_sw_50 = shape_metrics.get("Pc_log_at_sw_50", np.nan)
+            pc_slope_middle = shape_metrics.get("Pc_slope_middle", np.nan)
+            pc_slope_complexity = shape_metrics.get("Pc_slope_complexity", np.nan)
+            pc_entry = 10 ** np.interp(1.0, x, y_log)
             sample_text = str(sample_id) if sample_id is not None else "N/A"
+            pc_log_at_sw_50_text = f"{pc_log_at_sw_50:.3f}" if np.isfinite(pc_log_at_sw_50) else "N/A"
+            pc_slope_middle_text = f"{pc_slope_middle:.3f}" if np.isfinite(pc_slope_middle) else "N/A"
+            pc_slope_complexity_text = f"{pc_slope_complexity:.3f}" if np.isfinite(pc_slope_complexity) else "N/A"
+            pc_entry_text = f"{pc_entry:.4g}" if np.isfinite(pc_entry) else "N/A"
 
             fig.add_trace(
                 go.Scatter(
@@ -758,11 +774,19 @@ def _plot_capillary_curves(df, sample_col=None, type_col="AutoPoreType", title=N
                         np.repeat(sample_text, len(x_smooth)),
                         np.repeat(str(t), len(x_smooth)),
                         np.repeat(fzi_text, len(x_smooth)),
+                        np.repeat(pc_log_at_sw_50_text, len(x_smooth)),
+                        np.repeat(pc_slope_middle_text, len(x_smooth)),
+                        np.repeat(pc_slope_complexity_text, len(x_smooth)),
+                        np.repeat(pc_entry_text, len(x_smooth)),
                     ]),
                     hovertemplate=(
                         "Sample: %{customdata[0]}<br>"
                         "Type: %{customdata[1]}<br>"
                         "FZI: %{customdata[2]}<br>"
+                        "Pc_log_at_sw_50: %{customdata[3]}<br>"
+                        "Pc_slope_middle: %{customdata[4]}<br>"
+                        "Pc_slope_complexity: %{customdata[5]}<br>"
+                        "Pc_entry at Sw=1: %{customdata[6]}<br>"
                         "Sw: %{x:.4f}<br>"
                         "Pc: %{y:.4g}<extra></extra>"
                     )
@@ -797,29 +821,65 @@ def _build_washburn_pore_throat_curve(sample_group):
 
     pressure = micp_curve["PC_STRESS_CORR"].to_numpy()
     saturation = micp_curve["SW_STRESS_CORR"].to_numpy()
-    radius = WASHBURN_RADIUS_CONSTANT_UM_MPA / pressure
 
-    radius_mid = np.sqrt(radius[:-1] * radius[1:])
-    pore_volume = np.abs(np.diff(saturation)) * 100
-    valid = np.isfinite(radius_mid) & np.isfinite(pore_volume) & (radius_mid > 0) & (pore_volume > 0)
-    if valid.sum() < 2:
+    if np.nanmax(pressure) <= np.nanmin(pressure):
         return pd.DataFrame(), None
 
-    washburn_curve = pd.DataFrame({
-        "PTR_P": radius_mid[valid],
-        "PORE_V_P": pore_volume[valid],
-    })
-    washburn_curve = (
-        washburn_curve
-        .groupby("PTR_P", as_index=False)["PORE_V_P"]
-        .sum()
-        .sort_values("PTR_P")
-    )
-    total_volume = washburn_curve["PORE_V_P"].sum()
-    if np.isfinite(total_volume) and total_volume > 0:
-        washburn_curve["PORE_V_P"] = washburn_curve["PORE_V_P"] / total_volume * 100
+    if np.corrcoef(pressure, saturation)[0, 1] < 0:
+        cumulative_volume = 1 - saturation
+    else:
+        cumulative_volume = saturation
 
-    return washburn_curve, "Washburn from MICP"
+    cumulative_volume = np.clip(cumulative_volume, 0, 1)
+    cumulative_volume = np.maximum.accumulate(cumulative_volume)
+
+    volume_span = cumulative_volume[-1] - cumulative_volume[0]
+    if not np.isfinite(volume_span) or volume_span <= 0:
+        return pd.DataFrame(), None
+
+    radius_constant = (
+        0.02
+        * WASHBURN_IFT_DYNE_PER_CM
+        * abs(np.cos(np.deg2rad(WASHBURN_CONTACT_ANGLE_DEG)))
+    )
+    class_count = int(
+        np.log10(PORE_RADIUS_MAX_UM / PORE_RADIUS_MIN_UM)
+        * PORE_RADIUS_CLASSES_PER_DECADE
+    )
+    radius_edges = np.logspace(
+        np.log10(PORE_RADIUS_MAX_UM),
+        np.log10(PORE_RADIUS_MIN_UM),
+        class_count + 1
+    )
+    pressure_edges = radius_constant / radius_edges
+
+    log_pressure = np.log10(pressure)
+    log_pressure_edges = np.log10(pressure_edges)
+    cumulative_at_edges = np.interp(
+        log_pressure_edges,
+        log_pressure,
+        cumulative_volume,
+        left=cumulative_volume[0],
+        right=cumulative_volume[-1]
+    )
+    pore_volume = np.diff(cumulative_at_edges)
+    radius_centers = np.sqrt(radius_edges[:-1] * radius_edges[1:])
+
+    valid = np.isfinite(radius_centers) & np.isfinite(pore_volume) & (pore_volume >= 0)
+    washburn_curve = pd.DataFrame({
+        "PTR_P": radius_centers[valid],
+        "PORE_V_P": pore_volume[valid] * 100,
+    })
+    positive_positions = np.flatnonzero(washburn_curve["PORE_V_P"].to_numpy() > 0)
+    if len(positive_positions) < 1:
+        return pd.DataFrame(), None
+
+    start = max(int(positive_positions[0]) - 1, 0)
+    stop = min(int(positive_positions[-1]) + 2, len(washburn_curve))
+    washburn_curve = washburn_curve.iloc[start:stop].copy()
+    washburn_curve = washburn_curve.sort_values("PTR_P")
+
+    return washburn_curve, "Washburn from MICP; Pc bar, IFT 480 dyn/cm, theta 140 deg"
 
 
 def _build_measured_pore_throat_curve(sample_group):
@@ -837,12 +897,11 @@ def _build_measured_pore_throat_curve(sample_group):
     if len(measured_curve) < 4:
         return pd.DataFrame(), None
 
-    total_volume = measured_curve["PORE_V_P"].sum()
-    if not np.isfinite(total_volume) or total_volume <= 0:
+    positive_positions = np.flatnonzero(measured_curve["PORE_V_P"].to_numpy() > 0)
+    if len(positive_positions) < 2:
         return pd.DataFrame(), None
 
-    measured_curve["PORE_V_P"] = measured_curve["PORE_V_P"] / total_volume * 100
-    return measured_curve, "measured PORE_V_P normalized"
+    return measured_curve, "measured PORE_V_P"
 
 
 def _build_pore_throat_curve(sample_group):
@@ -964,7 +1023,9 @@ def _curve_correspondence_summary(df, sample_col, type_col):
                 pore_count += 1
                 if curve_source == "Washburn from MICP":
                     washburn_count += 1
-                elif curve_source == "measured PORE_V_P normalized":
+                elif str(curve_source).startswith("Washburn from MICP"):
+                    washburn_count += 1
+                elif curve_source == "measured PORE_V_P":
                     fallback_measured_count += 1
 
         rows.append({
@@ -1324,7 +1385,7 @@ def _render_manual_fzi_inputs(df, type_col="AutoPoreType"):
 
 def _apply_fzi_validity_screen(df, type_col, porosity_cutoff, fzi_bounds_by_type):
     screened = df.copy()
-    screened["FZIValidityType"] = screened[type_col].astype(str)
+    screened["ValidityType"] = screened[type_col].astype(str)
 
     invalid_mask = screened["CPOR_clean"] < porosity_cutoff
     for type_label, bounds in fzi_bounds_by_type.items():
@@ -1338,7 +1399,7 @@ def _apply_fzi_validity_screen(df, type_col, porosity_cutoff, fzi_bounds_by_type
             )
         )
 
-    screened.loc[invalid_mask, "FZIValidityType"] = "Invalid"
+    screened.loc[invalid_mask, "ValidityType"] = "Invalid"
     return screened
 
 
@@ -1350,7 +1411,7 @@ def _render_fzi_validity_controls(df, type_col, fzi_by_type):
         & df[type_col].notna()
     ].copy()
     if valid.empty:
-        st.warning("Valid CPOR_clean and FZI values are required for FZI validity screening.")
+        st.warning("Valid CPOR_clean and FZI values are required for FZI screening.")
         return df.copy(), {}, 0.0
 
     st.markdown("### FZI validity screening")
@@ -1385,6 +1446,7 @@ def _render_fzi_validity_controls(df, type_col, fzi_by_type):
         )
         default_lower = max(0.0001, default_center * 0.75)
         default_upper = max(default_lower + 0.0001, default_center * 1.25)
+        step_size = max(default_center * 0.05, 0.01)
 
         with bound_cols[index % len(bound_cols)]:
             st.markdown(f"**Type {type_label} FZI bounds**")
@@ -1393,7 +1455,7 @@ def _render_fzi_validity_controls(df, type_col, fzi_by_type):
                 min_value=0.0001,
                 max_value=1000.0,
                 value=float(default_lower),
-                step=max(default_center * 0.05, 0.01),
+                step=step_size,
                 format="%.4f",
                 key=f"fzi_validity_lower_{type_col}_{_safe_widget_key(type_label)}"
             )
@@ -1402,7 +1464,7 @@ def _render_fzi_validity_controls(df, type_col, fzi_by_type):
                 min_value=0.0001,
                 max_value=1000.0,
                 value=float(default_upper),
-                step=max(default_center * 0.05, 0.01),
+                step=step_size,
                 format="%.4f",
                 key=f"fzi_validity_upper_{type_col}_{_safe_widget_key(type_label)}"
             )
@@ -1417,7 +1479,7 @@ def _render_fzi_validity_controls(df, type_col, fzi_by_type):
         porosity_cutoff,
         fzi_bounds_by_type
     )
-    invalid_count = int((screened["FZIValidityType"] == "Invalid").sum())
+    invalid_count = int((screened["ValidityType"] == "Invalid").sum())
     st.caption(
         f"{invalid_count} of {len(screened)} point(s) are assigned to Invalid "
         "after porosity and FZI-bound screening."
@@ -1439,7 +1501,7 @@ def run():
     Required columns:
     - `CPOR_clean`: porosity in fraction, such as 0.18
     - `CKH_clean`: permeability in mD
-    - `PC_STRESS_CORR`: capillary pressure
+    - `PC_STRESS_CORR`: capillary pressure, interpreted as bar for Washburn pore-throat conversion
     - `SW_STRESS_CORR`: saturation fraction between 0 and 1
 
     Optional columns:
@@ -1713,7 +1775,7 @@ def run():
         )
         screened_valid_types = {
             type_label
-            for type_label in screened_fzi_source["FZIValidityType"].dropna().astype(str).unique()
+            for type_label in screened_fzi_source["ValidityType"].dropna().astype(str).unique()
             if type_label != "Invalid"
         }
         screened_fzi_by_type = {
@@ -1725,7 +1787,7 @@ def run():
             _plot_class_controlled_fzi(
                 screened_fzi_source,
                 screened_fzi_by_type,
-                type_col="FZIValidityType",
+                type_col="ValidityType",
                 title="FZI Validity-Screened Classification",
                 porosity_cutoff=porosity_cutoff
             ),
