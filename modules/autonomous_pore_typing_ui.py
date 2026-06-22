@@ -542,7 +542,7 @@ def _render_manual_type_correction_controls(df_classified, sample_features, samp
     }
 
     sample_lookup = (
-        sample_features[[sample_col, "AutoPoreType", "FZI_median", "Pc_slope_complexity"]]
+        sample_features[[sample_col, "AutoPoreType", "FZI_median", "Pc_log_at_sw_50"]]
         .copy()
         .sort_values(["AutoPoreType", sample_col])
     )
@@ -562,24 +562,24 @@ def _render_manual_type_correction_controls(df_classified, sample_features, samp
             key=f"{key_prefix}_filter_auto_types"
         )
 
-    complexity_min = float(sample_lookup["Pc_slope_complexity"].min())
-    complexity_max = float(sample_lookup["Pc_slope_complexity"].max())
+    pc50_min = float(sample_lookup["Pc_log_at_sw_50"].min())
+    pc50_max = float(sample_lookup["Pc_log_at_sw_50"].max())
     with filter_cols[1]:
-        if complexity_min < complexity_max:
-            complexity_range = st.slider(
-                "Filter by complexity",
-                min_value=complexity_min,
-                max_value=complexity_max,
-                value=(complexity_min, complexity_max),
-                step=max((complexity_max - complexity_min) / 100, 0.001),
+        if pc50_min < pc50_max:
+            pc50_range = st.slider(
+                "Filter by Pc_log_at_sw_50",
+                min_value=pc50_min,
+                max_value=pc50_max,
+                value=(pc50_min, pc50_max),
+                step=max((pc50_max - pc50_min) / 100, 0.001),
                 format="%.3f",
-                key=f"{key_prefix}_filter_complexity"
+                key=f"{key_prefix}_filter_pc_log_at_sw_50"
             )
         else:
-            complexity_range = (complexity_min, complexity_max)
+            pc50_range = (pc50_min, pc50_max)
             st.caption(
-                f"Complexity filter unavailable: all curves have "
-                f"Pc_slope_complexity {complexity_min:.3f}."
+                f"Pc_log_at_sw_50 filter unavailable: all curves have "
+                f"Pc_log_at_sw_50 {pc50_min:.3f}."
             )
 
     with filter_cols[2]:
@@ -592,7 +592,7 @@ def _render_manual_type_correction_controls(df_classified, sample_features, samp
 
     filtered_lookup = sample_lookup[
         sample_lookup["AutoPoreType"].isin(selected_filter_types)
-        & sample_lookup["Pc_slope_complexity"].between(complexity_range[0], complexity_range[1])
+        & sample_lookup["Pc_log_at_sw_50"].between(pc50_range[0], pc50_range[1])
     ].copy()
     if sample_search:
         filtered_lookup = filtered_lookup[
@@ -607,7 +607,7 @@ def _render_manual_type_correction_controls(df_classified, sample_features, samp
     sample_labels = {
         row["__SampleKey"]: (
             f"{row[sample_col]} | Auto Type {int(row['AutoPoreType'])} | "
-            f"FZI {row['FZI_median']:.2f} | Complexity {row['Pc_slope_complexity']:.3f}"
+            f"FZI {row['FZI_median']:.2f} | Pc50 {row['Pc_log_at_sw_50']:.3f}"
         )
         for _, row in sample_lookup.iterrows()
     }
