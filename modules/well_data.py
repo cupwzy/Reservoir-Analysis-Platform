@@ -23,7 +23,13 @@ def load_and_merge_well_data(files):
     all_data = []
 
     for file in files:
-        df = pd.read_excel(file, engine="openpyxl")
+        excel_file = pd.ExcelFile(file, engine="openpyxl")
+        sheet_name = (
+            "Net Pay Summary Table"
+            if "Net Pay Summary Table" in excel_file.sheet_names
+            else excel_file.sheet_names[0]
+        )
+        df = pd.read_excel(excel_file, sheet_name=sheet_name)
 
         # =========================
         # 获取井名

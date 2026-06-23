@@ -182,6 +182,7 @@ def _filter_interpretation_by_perforation_depth(df_all, perforation_df):
     df_work["Well"] = df_work["Well"].astype(str).str.strip()
     df_work["MD_TOP"] = pd.to_numeric(df_work["MD_TOP"], errors="coerce")
     df_work["MD_BOTTOM"] = pd.to_numeric(df_work["MD_BOTTOM"], errors="coerce")
+    df_work["__InterpretationRowId"] = df_work.index
 
     perf_work = perforation_df.copy()
     perf_work["Well Name"] = perf_work["Well Name"].astype(str).str.strip()
@@ -197,17 +198,18 @@ def _filter_interpretation_by_perforation_depth(df_all, perforation_df):
 
     filtered_parts = []
     summary_rows = []
-    for well_name, group in perf_work.groupby("Well Name", dropna=False):
-        depth_top = group["Perforation Top (MD, m)"].max()
-        depth_base = group["Perforation Base (MD, m)"].min()
+    for perforation_idx, perf_row in perf_work.iterrows():
+        well_name = str(perf_row["Well Name"]).strip()
+        depth_top = perf_row["Perforation Top (MD, m)"]
+        depth_base = perf_row["Perforation Base (MD, m)"]
         well_rows = df_work[df_work["Well"] == str(well_name).strip()].copy()
 
         if pd.isna(depth_top) or pd.isna(depth_base):
             selected = well_rows.iloc[0:0].copy()
         else:
             selected = well_rows[
-                (well_rows["MD_TOP"] <= depth_top)
-                & (well_rows["MD_BOTTOM"] >= depth_base)
+                (well_rows["MD_TOP"] <= depth_base)
+                & (well_rows["MD_BOTTOM"] >= depth_top)
             ].copy()
 
         if not selected.empty:
@@ -215,18 +217,70 @@ def _filter_interpretation_by_perforation_depth(df_all, perforation_df):
 
         summary_rows.append({
             "Well": str(well_name).strip(),
-            "Perforation Top Max (MD, m)": depth_top,
-            "Perforation Base Min (MD, m)": depth_base,
-            "Row-level condition": "MD_TOP <= top max and MD_BOTTOM >= base min",
+            "Perforation Top (MD, m)": depth_top,
+            "Perforation Base (MD, m)": depth_base,
+            "Row-level condition": "MD_TOP <= perforation base and MD_BOTTOM >= perforation top",
             "Matched interpretation rows": len(selected),
         })
 
     if filtered_parts:
-        filtered = pd.concat(filtered_parts, ignore_index=True)
+        filtered = (
+            pd.concat(filtered_parts, ignore_index=True)
+            .drop_duplicates(subset=["__InterpretationRowId"])
+            .drop(columns=["__InterpretationRowId"])
+            .reset_index(drop=True)
+        )
     else:
-        filtered = df_work.iloc[0:0].copy()
+        filtered = df_work.iloc[0:0].drop(columns=["__InterpretationRowId"]).copy()
 
     return filtered, pd.DataFrame(summary_rows)
+
+
+def _render_perforation_row_level_charts(df_filtered):
+    if df_filtered.empty:
+        st.warning("No interpretation rows remain after filtering.")
+        return
+
+    required_cols = ["Well", "ZONE", "MD_TOP", "MD_BOTTOM", "TVDSS_THK", "PHIE", "VSH", "SWE"]
+    missing_cols = [col for col in required_cols if col not in df_filtered.columns]
+    if missing_cols:
+        st.info(f"Row-level plots not available: missing {missing_cols}.")
+        return
+
+    df_plot = df_filtered.copy().reset_index(drop=True)
+    df_plot["Layer No."] = df_plot.index + 1
+    df_plot["Layer"] = df_plot.apply(
+        lambda row: (
+            f"{int(row['Layer No.'])}. {row['Well']} | {row['ZONE']} | "
+            f"{row['MD_TOP']:.1f}-{row['MD_BOTTOM']:.1f}"
+        ),
+        axis=1
+    )
+
+    st.markdown("### Thickness Comparison")
+    fig_thk = px.bar(
+        df_plot,
+        x="Layer",
+        y="TVDSS_THK",
+        color="ZONE",
+        title="Thickness by Selected Interpretation Row",
+        hover_data=["Layer No.", "Well", "ZONE", "MD_TOP", "MD_BOTTOM"]
+    )
+    fig_thk.update_layout(xaxis_title="Selected interpretation row")
+    st.plotly_chart(fig_thk, use_container_width=True)
+
+    st.markdown("### Reservoir Properties")
+    for property_name in ["PHIE", "VSH", "SWE"]:
+        fig_prop = px.bar(
+            df_plot,
+            x="Layer",
+            y=property_name,
+            color="ZONE",
+            title=f"{property_name} by Selected Interpretation Row",
+            hover_data=["Layer No.", "Well", "ZONE", "MD_TOP", "MD_BOTTOM"]
+        )
+        fig_prop.update_layout(xaxis_title="Selected interpretation row")
+        st.plotly_chart(fig_prop, use_container_width=True)
 
 
 def _render_multi_well_analysis(df_all, perforation_filter_df=None):
@@ -244,8 +298,8 @@ def _render_multi_well_analysis(df_all, perforation_filter_df=None):
     if use_perforation_depth:
         st.info(
             "ZONE selection is disabled. Each interpretation row is kept when its MD_TOP and "
-            "MD_BOTTOM cover the selected Table B perforation depth window: "
-            "MD_TOP <= max Perforation Top and MD_BOTTOM >= min Perforation Base."
+            "MD_BOTTOM overlap an individual selected Table B perforation interval: "
+            "MD_TOP <= Perforation Base and MD_BOTTOM >= Perforation Top."
         )
         df_filtered, depth_summary = _filter_interpretation_by_perforation_depth(
             df_all,
@@ -271,6 +325,10 @@ def _render_multi_well_analysis(df_all, perforation_filter_df=None):
     for col in numeric_cols:
         if col in df_filtered.columns:
             df_filtered[col] = pd.to_numeric(df_filtered[col], errors="coerce")
+
+    if use_perforation_depth:
+        _render_perforation_row_level_charts(df_filtered)
+        return
 
     st.markdown("### Combined Data")
     _show_foldable_table("Combined Data Table", df_filtered, expanded=False)
