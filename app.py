@@ -19,6 +19,8 @@ if "navigation" not in st.session_state:
     st.session_state.navigation = "Home"
 if "master_df" not in st.session_state:
     st.session_state.master_df = None
+if "perforation_df" not in st.session_state:
+    st.session_state.perforation_df = None
 
 
 def _set_navigation(target):
@@ -30,6 +32,92 @@ def _weighted_avg(group, col):
     if thickness == 0:
         return 0
     return (group[col] * group["TVDSS_THK"]).sum() / thickness
+
+
+PERFORATION_REQUIRED_COLUMNS = [
+    "Well Name",
+    "Perforation Date",
+    "Perforation Formation_old",
+    "Perforation Formation_updated",
+    "Perforation Top （MD，m）",
+    "Perforation Base （MD，m）",
+    "射孔井段（m）",
+]
+
+
+def _load_perforation_table(file):
+    df = pd.read_excel(file)
+    missing = [col for col in PERFORATION_REQUIRED_COLUMNS if col not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required perforation columns: {missing}")
+
+    df = df.copy()
+    df["Well Name"] = df["Well Name"].astype(str).str.strip()
+    df["Perforation Date"] = pd.to_datetime(df["Perforation Date"], errors="coerce")
+    numeric_cols = ["Perforation Top （MD，m）", "Perforation Base （MD，m）", "射孔井段（m）"]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def _format_date_range(values):
+    values = values.dropna()
+    if values.empty:
+        return ""
+    min_date = values.min().date().isoformat()
+    max_date = values.max().date().isoformat()
+    return min_date if min_date == max_date else f"{min_date} to {max_date}"
+
+
+def _summarize_perforations(perforation_df):
+    if perforation_df is None or perforation_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for well_name, group in perforation_df.groupby("Well Name", dropna=False):
+        formations = (
+            group["Perforation Formation_updated"]
+            .fillna(group["Perforation Formation_old"])
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+        top_md = group["Perforation Top （MD，m）"].min()
+        base_md = group["Perforation Base （MD，m）"].max()
+        md_range = ""
+        if pd.notna(top_md) and pd.notna(base_md):
+            md_range = f"{top_md:.1f} - {base_md:.1f}"
+
+        rows.append({
+            "Name": str(well_name).strip(),
+            "Perforation Count": len(group),
+            "Perforation Formations": ", ".join(formations),
+            "Perforation Date Range": _format_date_range(group["Perforation Date"]),
+            "Perforation MD Range": md_range,
+            "Total Perforated Interval (m)": group["射孔井段（m）"].sum(),
+        })
+
+    return pd.DataFrame(rows)
+
+
+def _merge_master_with_perforation_summary(master_df, perforation_df):
+    if perforation_df is None or perforation_df.empty:
+        return master_df.copy()
+
+    perforation_summary = _summarize_perforations(perforation_df)
+    if perforation_summary.empty:
+        return master_df.copy()
+
+    return master_df.merge(perforation_summary, on="Name", how="left")
+
+
+def _merge_master_with_perforation_detail(master_df, perforation_df):
+    if perforation_df is None or perforation_df.empty:
+        return pd.DataFrame()
+
+    detail = perforation_df.rename(columns={"Well Name": "Name"}).copy()
+    return master_df.merge(detail, on="Name", how="left")
 
 
 def _render_multi_well_analysis(df_all):
@@ -166,14 +254,55 @@ def _render_well_analysis_workspace():
         except Exception as exc:
             st.error(str(exc))
 
+    st.markdown("### Perforation Table B Requirements")
+    st.markdown("""
+    Optional table B records perforation intervals and must contain:
+
+    - Well Name
+    - Perforation Date
+    - Perforation Formation_old
+    - Perforation Formation_updated
+    - Perforation Top （MD，m）
+    - Perforation Base （MD，m）
+    - 射孔井段（m）
+    """)
+
+    perforation_file = st.file_uploader(
+        "Upload Perforation Table B",
+        type=["xlsx"],
+        key="perforation_table_uploader"
+    )
+    if perforation_file is not None:
+        try:
+            perforation_df = _load_perforation_table(perforation_file)
+            st.session_state.perforation_df = perforation_df
+            st.success(
+                f"Perforation table loaded: {perforation_df['Well Name'].nunique()} well(s), "
+                f"{len(perforation_df)} interval row(s)"
+            )
+        except Exception as exc:
+            st.error(str(exc))
+
     selected_wells = None
     if st.session_state.master_df is not None:
         master_df = st.session_state.master_df.copy()
         master_df["Name"] = master_df["Name"].astype(str).str.strip()
+        map_df = _merge_master_with_perforation_summary(
+            master_df,
+            st.session_state.perforation_df
+        )
 
         st.markdown("### Well Map")
-        st.dataframe(master_df, use_container_width=True)
-        st.plotly_chart(plot_well_map(master_df), use_container_width=True)
+        st.dataframe(map_df, use_container_width=True)
+        st.plotly_chart(plot_well_map(map_df), use_container_width=True)
+
+        detail_df = _merge_master_with_perforation_detail(
+            master_df,
+            st.session_state.perforation_df
+        )
+        if not detail_df.empty:
+            with st.expander("A + B detailed perforation table", expanded=False):
+                st.dataframe(detail_df, use_container_width=True)
 
         master_wells = sorted(master_df["Name"].dropna().astype(str).unique())
         st.markdown("### Well Selection From Table A")
@@ -188,7 +317,7 @@ def _render_well_analysis_workspace():
             st.warning("No wells selected. Select at least one well from table A.")
             return
 
-        selected_master_df = master_df[master_df["Name"].isin(selected_wells)].copy()
+        selected_master_df = map_df[map_df["Name"].isin(selected_wells)].copy()
         st.caption(f"{len(selected_wells)} of {len(master_wells)} wells selected from table A.")
         st.plotly_chart(plot_well_map(selected_master_df), use_container_width=True)
     else:
