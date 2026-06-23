@@ -21,6 +21,8 @@ if "master_df" not in st.session_state:
     st.session_state.master_df = None
 if "perforation_df" not in st.session_state:
     st.session_state.perforation_df = None
+if "filtered_perforation_df" not in st.session_state:
+    st.session_state.filtered_perforation_df = pd.DataFrame()
 
 
 def _set_navigation(target):
@@ -44,9 +46,9 @@ PERFORATION_REQUIRED_COLUMNS = [
     "Perforation Date",
     "Perforation Formation_old",
     "Perforation Formation_updated",
-    "Perforation Top （MD，m）",
-    "Perforation Base （MD，m）",
-    "射孔井段（m）",
+    "Perforation Top (MD, m)",
+    "Perforation Base (MD, m)",
+    "射孔井段 (m)",
 ]
 
 
@@ -59,7 +61,7 @@ def _load_perforation_table(file):
     df = df.copy()
     df["Well Name"] = df["Well Name"].astype(str).str.strip()
     df["Perforation Date"] = pd.to_datetime(df["Perforation Date"], errors="coerce")
-    numeric_cols = ["Perforation Top （MD，m）", "Perforation Base （MD，m）", "射孔井段（m）"]
+    numeric_cols = ["Perforation Top (MD, m)", "Perforation Base (MD, m)", "射孔井段 (m)"]
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
@@ -88,8 +90,8 @@ def _summarize_perforations(perforation_df):
             .unique()
             .tolist()
         )
-        top_md = group["Perforation Top （MD，m）"].min()
-        base_md = group["Perforation Base （MD，m）"].max()
+        top_md = group["Perforation Top (MD, m)"].min()
+        base_md = group["Perforation Base (MD, m)"].max()
         md_range = ""
         if pd.notna(top_md) and pd.notna(base_md):
             md_range = f"{top_md:.1f} - {base_md:.1f}"
@@ -100,7 +102,7 @@ def _summarize_perforations(perforation_df):
             "Perforation Formations": ", ".join(formations),
             "Perforation Date Range": _format_date_range(group["Perforation Date"]),
             "Perforation MD Range": md_range,
-            "Total Perforated Interval (m)": group["射孔井段（m）"].sum(),
+            "Total Perforated Interval (m)": group["射孔井段 (m)"].sum(),
         })
 
     return pd.DataFrame(rows)
@@ -127,53 +129,143 @@ def _merge_master_with_perforation_detail(master_df, perforation_df):
 
 def _render_perforation_formation_filter(perforation_df):
     if perforation_df is None or perforation_df.empty:
-        return
+        st.session_state.filtered_perforation_df = pd.DataFrame()
+        return pd.DataFrame()
 
-    formation_col = "Perforation Formation_updated"
-    if formation_col not in perforation_df.columns:
-        return
+    well_col = "Well Name"
+    if well_col not in perforation_df.columns:
+        st.session_state.filtered_perforation_df = pd.DataFrame()
+        return pd.DataFrame()
 
-    with st.expander("Table B filter by Perforation Formation_updated", expanded=False):
-        formation_values = sorted(
-            perforation_df[formation_col]
+    with st.expander("Table B filter by Well Name", expanded=False):
+        well_values = sorted(
+            perforation_df[well_col]
             .dropna()
             .astype(str)
             .unique()
             .tolist()
         )
-        selected_formations = st.multiselect(
-            "Select Perforation Formation_updated",
-            options=formation_values,
-            default=formation_values,
-            key="perforation_formation_updated_filter"
+        selected_wells = st.multiselect(
+            "Select Well Name",
+            options=well_values,
+            default=well_values,
+            key="perforation_well_name_filter"
         )
-        if selected_formations:
+        if selected_wells:
             filtered = perforation_df[
-                perforation_df[formation_col].astype(str).isin(selected_formations)
+                perforation_df[well_col].astype(str).isin(selected_wells)
             ].copy()
         else:
             filtered = perforation_df.copy()
-            st.warning("No formation selected. Showing all table B rows.")
+            st.warning("No well selected. Showing all table B rows.")
 
         st.caption(f"{len(filtered):,} of {len(perforation_df):,} perforation row(s) shown.")
         st.dataframe(filtered, use_container_width=True)
+        st.session_state.filtered_perforation_df = filtered
+        return filtered
 
 
-def _render_multi_well_analysis(df_all):
+def _filter_interpretation_by_perforation_depth(df_all, perforation_df):
+    interp_required = ["Well", "MD_TOP", "MD_BOTTOM"]
+    perf_required = ["Well Name", "Perforation Top (MD, m)", "Perforation Base (MD, m)"]
+    missing_interp = [col for col in interp_required if col not in df_all.columns]
+    missing_perf = [col for col in perf_required if col not in perforation_df.columns]
+
+    if missing_interp or missing_perf:
+        if missing_interp:
+            st.warning(f"Depth filter unavailable: interpretation files are missing {missing_interp}.")
+        if missing_perf:
+            st.warning(f"Depth filter unavailable: Table B is missing {missing_perf}.")
+        return df_all.iloc[0:0].copy(), pd.DataFrame()
+
+    df_work = df_all.copy()
+    df_work["Well"] = df_work["Well"].astype(str).str.strip()
+    df_work["MD_TOP"] = pd.to_numeric(df_work["MD_TOP"], errors="coerce")
+    df_work["MD_BOTTOM"] = pd.to_numeric(df_work["MD_BOTTOM"], errors="coerce")
+
+    perf_work = perforation_df.copy()
+    perf_work["Well Name"] = perf_work["Well Name"].astype(str).str.strip()
+    perf_work["Perforation Top (MD, m)"] = pd.to_numeric(
+        perf_work["Perforation Top (MD, m)"],
+        errors="coerce"
+    )
+    perf_work["Perforation Base (MD, m)"] = pd.to_numeric(
+        perf_work["Perforation Base (MD, m)"],
+        errors="coerce"
+    )
+    perf_work = perf_work.dropna(subset=["Well Name", "Perforation Top (MD, m)", "Perforation Base (MD, m)"])
+
+    filtered_parts = []
+    summary_rows = []
+    for well_name, group in perf_work.groupby("Well Name", dropna=False):
+        depth_top = group["Perforation Top (MD, m)"].max()
+        depth_base = group["Perforation Base (MD, m)"].min()
+        well_rows = df_work[df_work["Well"] == str(well_name).strip()].copy()
+
+        if pd.isna(depth_top) or pd.isna(depth_base):
+            selected = well_rows.iloc[0:0].copy()
+        else:
+            selected = well_rows[
+                (well_rows["MD_TOP"] <= depth_top)
+                & (well_rows["MD_BOTTOM"] >= depth_base)
+            ].copy()
+
+        if not selected.empty:
+            filtered_parts.append(selected)
+
+        summary_rows.append({
+            "Well": str(well_name).strip(),
+            "Perforation Top Max (MD, m)": depth_top,
+            "Perforation Base Min (MD, m)": depth_base,
+            "Row-level condition": "MD_TOP <= top max and MD_BOTTOM >= base min",
+            "Matched interpretation rows": len(selected),
+        })
+
+    if filtered_parts:
+        filtered = pd.concat(filtered_parts, ignore_index=True)
+    else:
+        filtered = df_work.iloc[0:0].copy()
+
+    return filtered, pd.DataFrame(summary_rows)
+
+
+def _render_multi_well_analysis(df_all, perforation_filter_df=None):
     st.markdown("### ZONE Selection")
 
-    zones = sorted(df_all["ZONE"].dropna().unique())
-    selected_zones = st.multiselect(
-        "Select ZONE (optional)",
-        options=zones,
-        default=[],
-        key="zone_selector"
-    )
+    has_perforation_filter = perforation_filter_df is not None and not perforation_filter_df.empty
+    use_perforation_depth = False
+    if has_perforation_filter:
+        use_perforation_depth = st.checkbox(
+            "Use Table B well-name filter and perforation depth range",
+            value=False,
+            key="use_perforation_depth_filter"
+        )
 
-    if selected_zones:
-        df_filtered = df_all[df_all["ZONE"].isin(selected_zones)].copy()
+    if use_perforation_depth:
+        st.info(
+            "ZONE selection is disabled. Each interpretation row is kept when its MD_TOP and "
+            "MD_BOTTOM cover the selected Table B perforation depth window: "
+            "MD_TOP <= max Perforation Top and MD_BOTTOM >= min Perforation Base."
+        )
+        df_filtered, depth_summary = _filter_interpretation_by_perforation_depth(
+            df_all,
+            perforation_filter_df
+        )
+        if not depth_summary.empty:
+            _show_foldable_table("Perforation Depth Filter Summary", depth_summary, expanded=False)
     else:
-        df_filtered = df_all.copy()
+        zones = sorted(df_all["ZONE"].dropna().unique())
+        selected_zones = st.multiselect(
+            "Select ZONE (optional)",
+            options=zones,
+            default=[],
+            key="zone_selector"
+        )
+
+        if selected_zones:
+            df_filtered = df_all[df_all["ZONE"].isin(selected_zones)].copy()
+        else:
+            df_filtered = df_all.copy()
 
     numeric_cols = ["MD_THK", "TVDSS_THK", "VSH", "PHIE", "SWE"]
     for col in numeric_cols:
@@ -182,6 +274,10 @@ def _render_multi_well_analysis(df_all):
 
     st.markdown("### Combined Data")
     _show_foldable_table("Combined Data Table", df_filtered, expanded=False)
+
+    if df_filtered.empty:
+        st.warning("No interpretation rows remain after filtering.")
+        return
 
     st.markdown("### Summary")
     required_cols = ["MD_THK", "TVDSS_THK", "VSH", "PHIE", "SWE"]
@@ -301,9 +397,9 @@ def _render_well_analysis_workspace():
     - Perforation Date
     - Perforation Formation_old
     - Perforation Formation_updated
-    - Perforation Top （MD，m）
-    - Perforation Base （MD，m）
-    - 射孔井段（m）
+    - Perforation Top (MD, m)
+    - Perforation Base (MD, m)
+    - 射孔井段 (m)
     """)
 
     perforation_file = st.file_uploader(
@@ -322,7 +418,6 @@ def _render_well_analysis_workspace():
         except Exception as exc:
             st.error(str(exc))
 
-    selected_wells = None
     if st.session_state.master_df is not None:
         master_df = st.session_state.master_df.copy()
         master_df["Name"] = master_df["Name"].astype(str).str.strip()
@@ -332,7 +427,6 @@ def _render_well_analysis_workspace():
         )
 
         st.markdown("### Well Map")
-        _show_foldable_table("A + B well map source table", map_df, expanded=False)
         st.plotly_chart(plot_well_map(map_df), use_container_width=True)
 
         detail_df = _merge_master_with_perforation_detail(
@@ -342,26 +436,13 @@ def _render_well_analysis_workspace():
         if not detail_df.empty:
             with st.expander("A + B detailed perforation table", expanded=False):
                 st.dataframe(detail_df, use_container_width=True)
-            _render_perforation_formation_filter(st.session_state.perforation_df)
-
-        master_wells = sorted(master_df["Name"].dropna().astype(str).unique())
-        st.markdown("### Well Selection From Table A")
-        selected_wells = st.multiselect(
-            "Select wells to display and analyze",
-            options=master_wells,
-            default=master_wells,
-            key="master_well_selector"
-        )
-
-        if not selected_wells:
-            st.warning("No wells selected. Select at least one well from table A.")
-            return
-
-        selected_master_df = map_df[map_df["Name"].isin(selected_wells)].copy()
-        st.caption(f"{len(selected_wells)} of {len(master_wells)} wells selected from table A.")
-        st.plotly_chart(plot_well_map(selected_master_df), use_container_width=True)
     else:
         st.info("No master table loaded. Well map is skipped, and Multi-Well Analysis will use uploaded interpretation files directly.")
+
+    if st.session_state.perforation_df is not None:
+        _render_perforation_formation_filter(st.session_state.perforation_df)
+    else:
+        st.session_state.filtered_perforation_df = pd.DataFrame()
 
     st.markdown("### Upload Well Interpretation Files")
     st.caption(
@@ -392,38 +473,25 @@ def _render_well_analysis_workspace():
     df_all = st.session_state.df_all.copy()
     df_all["Well"] = df_all["Well"].astype(str).str.strip()
 
-    if selected_wells is None:
-        uploaded_wells = sorted(df_all["Well"].dropna().unique())
-        st.markdown("### Well Selection From Interpretation Files")
-        selected_wells = st.multiselect(
-            "Select wells to analyze",
-            options=uploaded_wells,
-            default=uploaded_wells,
-            key="interpretation_well_selector"
-        )
+    uploaded_wells = sorted(df_all["Well"].dropna().unique())
+    st.markdown("### Well Selection From Interpretation Files")
+    selected_wells = st.multiselect(
+        "Select wells to analyze",
+        options=uploaded_wells,
+        default=uploaded_wells,
+        key="interpretation_well_selector"
+    )
 
     df_selected_wells = df_all[df_all["Well"].isin(selected_wells)].copy()
-
-    if st.session_state.master_df is not None:
-        missing_interpretation = sorted(set(selected_wells) - set(df_selected_wells["Well"].unique()))
-        uploaded_not_selected = sorted(set(df_all["Well"].unique()) - set(selected_wells))
-
-        if missing_interpretation:
-            st.warning(
-                "No interpretation data matched these selected master wells: "
-                + ", ".join(missing_interpretation)
-            )
-        if uploaded_not_selected:
-            st.caption(
-                "Uploaded interpretation wells hidden by table A selection: "
-                + ", ".join(uploaded_not_selected)
-            )
 
     if df_selected_wells.empty:
         st.warning("No uploaded interpretation data matches the selected wells.")
         return
 
-    _render_multi_well_analysis(df_selected_wells)
+    _render_multi_well_analysis(
+        df_selected_wells,
+        st.session_state.get("filtered_perforation_df")
+    )
 
 
 menu = st.sidebar.radio(
