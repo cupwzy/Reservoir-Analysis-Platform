@@ -13,6 +13,15 @@ from modules.ui_theme import COLORS, TYPE_COLORS, style_plotly
 
 REQUIRED_COLUMNS = ["CPOR_clean", "CKH_clean", "PC_STRESS_CORR", "SW_STRESS_CORR"]
 OPTIONAL_COLUMNS = ["PTR_P", "PORE_V_P"]
+FORMATION_COLUMN_CANDIDATES = [
+    "Formation", "formation", "FORMATION",
+    "Layer", "layer", "LAYER",
+    "Zone", "zone", "ZONE",
+    "Member", "member", "MEMBER",
+    "Stratigraphy", "stratigraphy",
+    "Strata", "strata",
+    "Reservoir", "reservoir",
+]
 SAMPLE_ID_CANDIDATES = [
     "SampleID", "Sample_ID", "Sample", "Plug", "Plug_ID", "Core_ID",
     "ID", "ReferenceName", "wellName", "Well", "WELL", "WellName_2",
@@ -176,6 +185,73 @@ def _clean_input(df):
         df = df[(df["PTR_P"].isna()) | (df["PTR_P"] > 0)].copy()
 
     return df
+
+
+def _formation_filter_candidates(df):
+    candidates = [
+        col for col in FORMATION_COLUMN_CANDIDATES
+        if col in df.columns and df[col].dropna().nunique() > 1
+    ]
+    if candidates:
+        return candidates
+
+    fallback_candidates = []
+    for col in df.columns:
+        if col in REQUIRED_COLUMNS + OPTIONAL_COLUMNS:
+            continue
+        values = df[col].dropna()
+        if values.empty:
+            continue
+        unique_count = values.nunique()
+        if 1 < unique_count <= min(80, max(2, len(values) // 2)):
+            fallback_candidates.append(col)
+
+    return fallback_candidates
+
+
+def _render_formation_filter(df):
+    candidates = _formation_filter_candidates(df)
+    if not candidates:
+        st.info(
+            "No formation/layer column was detected, so all uploaded data will be analyzed together."
+        )
+        return df, None, []
+
+    st.markdown("### Data filter before autonomous typing")
+    filter_cols = st.columns([1, 2])
+    with filter_cols[0]:
+        formation_col = st.selectbox(
+            "Formation / layer column",
+            options=candidates,
+            key="autonomous_formation_filter_column"
+        )
+
+    formation_values = (
+        df[formation_col]
+        .dropna()
+        .astype(str)
+        .sort_values()
+        .unique()
+        .tolist()
+    )
+    with filter_cols[1]:
+        selected_formations = st.multiselect(
+            "Formations to analyze",
+            options=formation_values,
+            default=formation_values,
+            key=f"autonomous_formation_filter_values_{formation_col}"
+        )
+
+    if not selected_formations:
+        st.warning("No formation selected. Showing all data instead.")
+        selected_formations = formation_values
+
+    filtered = df[df[formation_col].astype(str).isin(selected_formations)].copy()
+    st.caption(
+        f"Using {len(filtered):,} of {len(df):,} cleaned rows from "
+        f"{len(selected_formations)} selected formation(s)."
+    )
+    return filtered, formation_col, selected_formations
 
 
 def _add_petrophysical_features(df):
@@ -1540,6 +1616,11 @@ def run():
         st.error("No valid data after cleaning. Please check numeric ranges and required columns.")
         return
 
+    df, formation_col, selected_formations = _render_formation_filter(df)
+    if df.empty:
+        st.error("No valid data remains after formation filtering.")
+        return
+
     try:
         df, sample_col, sample_message = _auto_assign_sample_identifier(df)
     except Exception as exc:
@@ -1624,9 +1705,9 @@ def run():
     st.markdown("### Classified Data Preview")
     preview_cols = [
         col for col in [
-            sample_col, "CPOR_clean", "CKH_clean", "PC_STRESS_CORR",
+            sample_col, formation_col, "CPOR_clean", "CKH_clean", "PC_STRESS_CORR",
             "SW_STRESS_CORR", "PTR_P", "FZI", "R35_equiv", "AutoPoreType"
-        ] if col in df_classified.columns
+        ] if col and col in df_classified.columns
     ]
     st.dataframe(df_classified[preview_cols].head(200), use_container_width=True)
 
