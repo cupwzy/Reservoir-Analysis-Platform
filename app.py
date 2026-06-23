@@ -9,29 +9,259 @@ from modules import pore_typing_ui
 from modules import autonomous_pore_typing_ui
 from modules.ui_theme import apply_theme
 
-# ===============================
-# 页面配置
-# ===============================
+
 st.set_page_config(layout="wide")
 apply_theme()
 
 st.title("Reservoir Analysis Platform")
 
-# ✅ 更新 Navigation
 if "navigation" not in st.session_state:
     st.session_state.navigation = "Home"
+if "master_df" not in st.session_state:
+    st.session_state.master_df = None
 
 
 def _set_navigation(target):
     st.session_state.navigation = target
 
 
+def _weighted_avg(group, col):
+    thickness = group["TVDSS_THK"].sum()
+    if thickness == 0:
+        return 0
+    return (group[col] * group["TVDSS_THK"]).sum() / thickness
+
+
+def _render_multi_well_analysis(df_all):
+    st.markdown("### ZONE Selection")
+
+    zones = sorted(df_all["ZONE"].dropna().unique())
+    selected_zones = st.multiselect(
+        "Select ZONE (optional)",
+        options=zones,
+        default=[],
+        key="zone_selector"
+    )
+
+    if selected_zones:
+        df_filtered = df_all[df_all["ZONE"].isin(selected_zones)].copy()
+    else:
+        df_filtered = df_all.copy()
+
+    numeric_cols = ["MD_THK", "TVDSS_THK", "VSH", "PHIE", "SWE"]
+    for col in numeric_cols:
+        if col in df_filtered.columns:
+            df_filtered[col] = pd.to_numeric(df_filtered[col], errors="coerce")
+
+    st.markdown("### Combined Data")
+    st.dataframe(df_filtered, use_container_width=True)
+
+    st.markdown("### Summary")
+    required_cols = ["MD_THK", "TVDSS_THK", "VSH", "PHIE", "SWE"]
+    if not all(col in df_filtered.columns for col in required_cols):
+        st.info("Summary not available: missing required columns.")
+    else:
+        df_calc = df_filtered.dropna(subset=required_cols)
+        if df_calc.empty:
+            st.info("Summary not available: no valid data after filtering.")
+        else:
+            md_total = df_calc["MD_THK"].sum()
+            tvd_total = df_calc["TVDSS_THK"].sum()
+            if tvd_total <= 0:
+                st.info("Summary not available: total thickness is zero.")
+            else:
+                summary_df = pd.DataFrame({
+                    "Metric": ["MD_THK", "TVDSS_THK", "VSH", "PHIE", "SWE"],
+                    "Value": [
+                        md_total,
+                        tvd_total,
+                        (df_calc["VSH"] * df_calc["TVDSS_THK"]).sum() / tvd_total,
+                        (df_calc["PHIE"] * df_calc["TVDSS_THK"]).sum() / tvd_total,
+                        (df_calc["SWE"] * df_calc["TVDSS_THK"]).sum() / tvd_total,
+                    ],
+                })
+                st.dataframe(summary_df, use_container_width=True)
+
+    if not all(col in df_filtered.columns for col in ["Well", "ZONE", "TVDSS_THK"]):
+        st.info("Thickness plot not available: missing Well, ZONE, or TVDSS_THK.")
+        return
+
+    st.markdown("### Thickness Comparison (ZONE + Total)")
+    df_zone = df_filtered.groupby(["Well", "ZONE"], as_index=False)["TVDSS_THK"].sum()
+    df_total = df_zone.groupby("Well", as_index=False)["TVDSS_THK"].sum()
+    df_total["ZONE"] = "Total"
+    df_plot = pd.concat([df_zone, df_total], ignore_index=True)
+
+    fig_thk = px.bar(
+        df_plot,
+        x="Well",
+        y="TVDSS_THK",
+        color="ZONE",
+        barmode="group",
+        title="Thickness by Well and ZONE"
+    )
+    st.plotly_chart(fig_thk, use_container_width=True)
+
+    st.markdown("### Reservoir Properties (ZONE + Total)")
+    if not all(col in df_filtered.columns for col in ["PHIE", "VSH", "SWE"]):
+        st.info("Reservoir property plot not available: missing PHIE, VSH, or SWE.")
+        return
+
+    df_prop_zone = df_filtered.groupby(["Well", "ZONE"]).apply(
+        lambda g: pd.Series({
+            "PHIE": _weighted_avg(g, "PHIE"),
+            "VSH": _weighted_avg(g, "VSH"),
+            "SWE": _weighted_avg(g, "SWE"),
+        })
+    ).reset_index()
+
+    df_prop_total = df_filtered.groupby("Well").apply(
+        lambda g: pd.Series({
+            "PHIE": _weighted_avg(g, "PHIE"),
+            "VSH": _weighted_avg(g, "VSH"),
+            "SWE": _weighted_avg(g, "SWE"),
+        })
+    ).reset_index()
+    df_prop_total["ZONE"] = "Total"
+
+    df_prop_all = pd.concat([df_prop_zone, df_prop_total], ignore_index=True)
+
+    for property_name in ["PHIE", "VSH", "SWE"]:
+        fig_prop = px.bar(
+            df_prop_all,
+            x="Well",
+            y=property_name,
+            color="ZONE",
+            barmode="group",
+            title=f"{property_name} by Well, ZONE and Total"
+        )
+        st.plotly_chart(fig_prop, use_container_width=True)
+
+
+def _render_well_analysis_workspace():
+    st.subheader("Well Analysis")
+    st.info(
+        "Upload table A when you want a location map and master-well filtering. "
+        "You can also skip table A and run Multi-Well Analysis directly from interpretation files."
+    )
+
+    st.markdown("""
+    ### Master Table Requirements
+
+    Upload table A first. It must contain:
+
+    - Name: Well name
+    - Well symbol: Oil or Injection
+    - Surface X: X coordinate
+    - Surface Y: Y coordinate
+    - Target: Reservoir target zone
+    """)
+
+    file = st.file_uploader("Upload Master Table", type=["xlsx"], key="master_table_uploader")
+    if file is not None:
+        try:
+            df = load_master_table(file)
+            st.session_state.master_df = df
+            st.success("Master table loaded")
+        except Exception as exc:
+            st.error(str(exc))
+
+    selected_wells = None
+    if st.session_state.master_df is not None:
+        master_df = st.session_state.master_df.copy()
+        master_df["Name"] = master_df["Name"].astype(str).str.strip()
+
+        st.markdown("### Well Map")
+        st.dataframe(master_df, use_container_width=True)
+        st.plotly_chart(plot_well_map(master_df), use_container_width=True)
+
+        master_wells = sorted(master_df["Name"].dropna().astype(str).unique())
+        st.markdown("### Well Selection From Table A")
+        selected_wells = st.multiselect(
+            "Select wells to display and analyze",
+            options=master_wells,
+            default=master_wells,
+            key="master_well_selector"
+        )
+
+        if not selected_wells:
+            st.warning("No wells selected. Select at least one well from table A.")
+            return
+
+        selected_master_df = master_df[master_df["Name"].isin(selected_wells)].copy()
+        st.caption(f"{len(selected_wells)} of {len(master_wells)} wells selected from table A.")
+        st.plotly_chart(plot_well_map(selected_master_df), use_container_width=True)
+    else:
+        st.info("No master table loaded. Well map is skipped, and Multi-Well Analysis will use uploaded interpretation files directly.")
+
+    st.markdown("### Upload Well Interpretation Files")
+    st.caption(
+        "Upload one or more interpretation Excel files. If a file does not contain a `Well` column, "
+        "the file name without extension is used as the well name."
+    )
+
+    files = st.file_uploader(
+        "Upload Well Interpretation Files",
+        type=["xlsx"],
+        accept_multiple_files=True,
+        key="well_uploader"
+    )
+
+    if files:
+        try:
+            df_all = load_and_merge_well_data(files)
+            df_all["Well"] = df_all["Well"].astype(str).str.strip()
+            st.session_state.df_all = df_all
+            st.success(f"Loaded {df_all['Well'].nunique()} interpretation well(s)")
+        except Exception as exc:
+            st.error(str(exc))
+
+    if "df_all" not in st.session_state:
+        st.warning("Please upload well interpretation files to continue multi-well analysis.")
+        return
+
+    df_all = st.session_state.df_all.copy()
+    df_all["Well"] = df_all["Well"].astype(str).str.strip()
+
+    if selected_wells is None:
+        uploaded_wells = sorted(df_all["Well"].dropna().unique())
+        st.markdown("### Well Selection From Interpretation Files")
+        selected_wells = st.multiselect(
+            "Select wells to analyze",
+            options=uploaded_wells,
+            default=uploaded_wells,
+            key="interpretation_well_selector"
+        )
+
+    df_selected_wells = df_all[df_all["Well"].isin(selected_wells)].copy()
+
+    if st.session_state.master_df is not None:
+        missing_interpretation = sorted(set(selected_wells) - set(df_selected_wells["Well"].unique()))
+        uploaded_not_selected = sorted(set(df_all["Well"].unique()) - set(selected_wells))
+
+        if missing_interpretation:
+            st.warning(
+                "No interpretation data matched these selected master wells: "
+                + ", ".join(missing_interpretation)
+            )
+        if uploaded_not_selected:
+            st.caption(
+                "Uploaded interpretation wells hidden by table A selection: "
+                + ", ".join(uploaded_not_selected)
+            )
+
+    if df_selected_wells.empty:
+        st.warning("No uploaded interpretation data matches the selected wells.")
+        return
+
+    _render_multi_well_analysis(df_selected_wells)
+
+
 menu = st.sidebar.radio(
     "Navigation",
     [
         "Home",
-        "Well Map",
-        "Multi-Well Analysis", 
+        "Well Analysis",
         "Pore Typing",
         "Autonomous Pore Typing"
     ],
@@ -41,20 +271,10 @@ menu = st.sidebar.radio(
 if menu == "Pore Typing":
     pore_typing_ui.run()
 
-if menu == "Autonomous Pore Typing":
+elif menu == "Autonomous Pore Typing":
     autonomous_pore_typing_ui.run()
 
-# ===============================
-# Session State
-# ===============================
-if "master_df" not in st.session_state:
-    st.session_state.master_df = None
-
-# =========================
-# HOME
-# =========================
-if menu == "Home":
-
+elif menu == "Home":
     st.markdown(
         """
         <div class="rp-hero">
@@ -90,9 +310,9 @@ if menu == "Home":
         st.markdown(
             f"""
             <div class="rp-card">
-                <div class="rp-chip">Well Map</div>
+                <div class="rp-chip">Well Analysis</div>
                 <div class="rp-status"><span class="{dot_class}"></span>{text}</div>
-                <p>Upload well coordinates and symbols to build the field location map.</p>
+                <p>Upload well metadata to build maps, or run interpretation analysis directly.</p>
             </div>
             """,
             unsafe_allow_html=True
@@ -104,7 +324,7 @@ if menu == "Home":
         st.markdown(
             f"""
             <div class="rp-card">
-                <div class="rp-chip">Multi-Well</div>
+                <div class="rp-chip">Interpretation</div>
                 <div class="rp-status"><span class="{dot_class}"></span>{text}</div>
                 <p>Merge interpretation spreadsheets, select zones, and compare reservoir properties.</p>
             </div>
@@ -125,13 +345,12 @@ if menu == "Home":
         )
 
     st.markdown("### Start a Workflow")
-    module_cols = st.columns(4)
     modules = [
-        ("Well Map", "Load master well table and inspect well locations."),
-        ("Multi-Well Analysis", "Merge interpretation results and compare zones."),
+        ("Well Analysis", "Map wells when metadata is available and compare multi-well interpretation results."),
         ("Pore Typing", "Use trained pore typing methods and RCA overlays."),
         ("Autonomous Pore Typing", "Classify carbonate MICP curves without labels."),
     ]
+    module_cols = st.columns(len(modules))
 
     for col, (target, description) in zip(module_cols, modules):
         with col:
@@ -154,10 +373,10 @@ if menu == "Home":
     st.markdown("### Recommended Analysis Path")
     step_cols = st.columns(4)
     steps = [
-        ("1. Load well metadata", "Start in Well Map with Name, symbol, surface coordinates, and target."),
-        ("2. Integrate interpretation files", "Upload per-well interpretation spreadsheets and select target zones."),
-        ("3. Classify pore systems", "Use Pore Typing or Autonomous Pore Typing depending on label availability."),
-        ("4. Review RCA and exports", "Inspect FZI-constrained RCA, capillary curves, and classification results."),
+        ("1. Open Well Analysis", "Upload table A for mapping, or skip directly to interpretation files."),
+        ("2. Select wells", "Use table A well names when available, otherwise select wells from uploaded interpretation files."),
+        ("3. Integrate interpretation files", "Upload per-well interpretation spreadsheets named by well or containing a Well column."),
+        ("4. Review reservoir and pore outputs", "Compare zones, then continue to pore typing workflows when needed."),
     ]
     for col, (title, body) in zip(step_cols, steps):
         with col:
@@ -182,264 +401,5 @@ if menu == "Home":
         "and avoid uploading sensitive well data to GitHub."
     )
 
-# =========================
-# WELL MAP
-# =========================
-elif menu == "Well Map":
-    st.subheader("Well Location Map")
-
-    st.markdown("""
-    ### Input Data Requirements
-
-    The uploaded Excel file must contain the following columns:
-
-    - Name: Well name  
-    - Well symbol: Oil or Injection  
-    - Surface X: X coordinate  
-    - Surface Y: Y coordinate  
-    - Target: Reservoir target zone  
-    """)
-
-
-    file = st.file_uploader("Upload Master Table", type=["xlsx"])
-
-    # ✅ 如果用户上传 → 存入 session
-    
-    if file is not None:
-        df = load_master_table(file)
-        st.session_state.master_df = df
-
-    # ✅ 永远从 session 读取
-    if st.session_state.master_df is not None:
-        df = st.session_state.master_df
-
-        st.success("Master table loaded")
-        st.dataframe(df, use_container_width=True)
-
-        fig = plot_well_map(df)
-        st.plotly_chart(fig, use_container_width=True)
-
-    else:
-        st.warning("Please upload master table.")
-
-
-# =========================
-# Multi-Well Analysis（原 Workspace）
-# =========================
-elif menu == "Multi-Well Analysis":
-
-    st.subheader("Multi-Well Analysis")
-    st.info("This module is used for multi-well data integration and comparison")
-
-    # =========================
-    # Upload
-    # =========================
-    files = st.file_uploader(
-        "Upload Well Interpretation Files",
-        type=["xlsx"],
-        accept_multiple_files=True,
-        key="well_uploader"
-    )
-
-    # ✅ 只负责“存”
-    if files:
-        try:
-            from modules.well_data import load_and_merge_well_data
-            df_all = load_and_merge_well_data(files)
-
-            st.session_state.df_all = df_all
-            st.success(f"Loaded {df_all['Well'].nunique()} wells")
-
-        except Exception as e:
-            st.error(str(e))
-
-    # =========================
-    # 主逻辑（永远从 session 读）
-    # =========================
-    if "df_all" not in st.session_state:
-        st.warning("Please upload well data.")
-        st.stop()
-
-    df_all = st.session_state.df_all
-
-    # =========================
-    # ZONE Selection
-    # =========================
-    st.markdown("### ZONE Selection")
-
-    zones = sorted(df_all["ZONE"].dropna().unique())
-
-    selected_zones = st.multiselect(
-        "Select ZONE (optional)",
-        options=zones,
-        default=[],
-        key="zone_selector"
-    )
-
-    # =========================
-    # Filter
-    # =========================
-    if selected_zones:
-        df_filtered = df_all[df_all["ZONE"].isin(selected_zones)]
-    else:
-        df_filtered = df_all
-    
-    # ✅ 先做类型转换（必须）
-    numeric_cols = ["MD_THK", "TVDSS_THK", "VSH", "PHIE", "SWE"]
-
-    for col in numeric_cols:
-        df_filtered[col] = pd.to_numeric(df_filtered[col], errors="coerce")
-
-    # =========================
-    # Combined Data
-    # =========================
-    st.markdown("### Combined Data")
-    st.dataframe(df_filtered, use_container_width=True)
-
-    # =========================
-    # Summary
-    # =========================
-    st.markdown("### Summary")
-
-    required_cols = ["MD_THK", "TVDSS_THK", "VSH", "PHIE", "SWE"]
-
-    # ✅ 条件1：字段存在
-    if not all(col in df_filtered.columns for col in required_cols):
-        st.info("Summary not available: missing required columns.")
-
-    else:
-        df_calc = df_filtered.dropna(subset=required_cols)
-
-        # ✅ 条件2：有有效数据
-        if df_calc.empty:
-            st.info("Summary not available: no valid data after filtering.")
-
-        else:
-            md_total = df_calc["MD_THK"].sum()
-            tvd_total = df_calc["TVDSS_THK"].sum()
-
-            # ✅ 条件3：厚度合理
-            if tvd_total <= 0:
-                st.info("Summary not available: total thickness is zero.")
-
-            else:
-                # ✅ 正常计算
-                vsh = (df_calc["VSH"] * df_calc["TVDSS_THK"]).sum() / tvd_total
-                phie = (df_calc["PHIE"] * df_calc["TVDSS_THK"]).sum() / tvd_total
-                swe = (df_calc["SWE"] * df_calc["TVDSS_THK"]).sum() / tvd_total
-
-                import pandas as pd
-
-                summary_df = pd.DataFrame({
-                    "Metric": ["MD_THK", "TVDSS_THK", "VSH", "PHIE", "SWE"],
-                    "Value": [md_total, tvd_total, vsh, phie, swe]
-                })
-
-                st.dataframe(summary_df, use_container_width=True)
-
-
-    # =========================
-    # Plotly
-    # =========================
-
-    st.markdown("### Thickness Comparison (ZONE + Total)")
-
-    # =========================
-    # ZONE级别
-    # =========================
-    df_zone = df_filtered.groupby(
-        ["Well", "ZONE"], as_index=False
-    )["TVDSS_THK"].sum()
-
-    # =========================
-    # Total（关键）
-    # =========================
-    df_total = df_zone.groupby("Well", as_index=False)["TVDSS_THK"].sum()
-    df_total["ZONE"] = "Total"
-
-    # =========================
-    # 合并
-    # =========================
-    import pandas as pd
-
-    df_plot = pd.concat([df_zone, df_total], ignore_index=True)
-
-    # =========================
-    # Plot
-    # =========================
-    import plotly.express as px
-
-    fig_thk = px.bar(
-        df_plot,
-        x="Well",
-        y="TVDSS_THK",
-        color="ZONE",
-        barmode="group",   # ✅ 对比关键
-        title="Thickness by Well and ZONE"
-    )
-
-    st.plotly_chart(fig_thk, use_container_width=True)
-
-
-    st.markdown("### Reservoir Properties (ZONE + Total)")
-
-    def weighted_avg(g, col):
-        if g["TVDSS_THK"].sum() == 0:
-            return 0
-        return (g[col] * g["TVDSS_THK"]).sum() / g["TVDSS_THK"].sum()
-    
-    # =========================
-    # ZONE级别计算
-    # =========================
-    df_prop_zone = df_filtered.groupby(["Well", "ZONE"]).apply(
-        lambda g: pd.Series({
-            "PHIE": weighted_avg(g, "PHIE"),
-            "VSH": weighted_avg(g, "VSH"),
-            "SWE": weighted_avg(g, "SWE")
-        })
-    ).reset_index()
-
-    # =========================
-    # Total计算
-    # =========================
-    df_prop_total = df_filtered.groupby("Well").apply(
-        lambda g: pd.Series({
-            "PHIE": weighted_avg(g, "PHIE"),
-            "VSH": weighted_avg(g, "VSH"),
-            "SWE": weighted_avg(g, "SWE")
-        })
-    ).reset_index()
-
-    df_prop_total["ZONE"] = "Total"
-
-    # =========================
-    # 合并
-    # =========================
-    df_prop_all = pd.concat([df_prop_zone, df_prop_total], ignore_index=True)
-
-    # =========================
-    # 转长格式
-    # =========================
-    df_melt = df_prop_all.melt(
-        id_vars=["Well", "ZONE"],
-        value_vars=["PHIE", "VSH", "SWE"],
-        var_name="Property",
-        value_name="Value"
-    )
-
-    # =========================
-    # Plot
-    # =========================
-    fig_prop = px.bar(
-        df_melt,
-        x="Well",
-        y="Value",
-        color="ZONE",            # ✅ 用ZONE区分
-        facet_col="Property",    # ✅ 分属性展示
-        barmode="group",
-        title="Reservoir Properties by Well, ZONE and Total"
-    )
-
-    st.plotly_chart(fig_prop, use_container_width=True)
-
-
+elif menu == "Well Analysis":
+    _render_well_analysis_workspace()
