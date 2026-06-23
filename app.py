@@ -34,6 +34,11 @@ def _weighted_avg(group, col):
     return (group[col] * group["TVDSS_THK"]).sum() / thickness
 
 
+def _show_foldable_table(title, df, expanded=False):
+    with st.expander(title, expanded=expanded):
+        st.dataframe(df, use_container_width=True)
+
+
 PERFORATION_REQUIRED_COLUMNS = [
     "Well Name",
     "Perforation Date",
@@ -120,6 +125,40 @@ def _merge_master_with_perforation_detail(master_df, perforation_df):
     return master_df.merge(detail, on="Name", how="left")
 
 
+def _render_perforation_formation_filter(perforation_df):
+    if perforation_df is None or perforation_df.empty:
+        return
+
+    formation_col = "Perforation Formation_updated"
+    if formation_col not in perforation_df.columns:
+        return
+
+    with st.expander("Table B filter by Perforation Formation_updated", expanded=False):
+        formation_values = sorted(
+            perforation_df[formation_col]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+        selected_formations = st.multiselect(
+            "Select Perforation Formation_updated",
+            options=formation_values,
+            default=formation_values,
+            key="perforation_formation_updated_filter"
+        )
+        if selected_formations:
+            filtered = perforation_df[
+                perforation_df[formation_col].astype(str).isin(selected_formations)
+            ].copy()
+        else:
+            filtered = perforation_df.copy()
+            st.warning("No formation selected. Showing all table B rows.")
+
+        st.caption(f"{len(filtered):,} of {len(perforation_df):,} perforation row(s) shown.")
+        st.dataframe(filtered, use_container_width=True)
+
+
 def _render_multi_well_analysis(df_all):
     st.markdown("### ZONE Selection")
 
@@ -142,7 +181,7 @@ def _render_multi_well_analysis(df_all):
             df_filtered[col] = pd.to_numeric(df_filtered[col], errors="coerce")
 
     st.markdown("### Combined Data")
-    st.dataframe(df_filtered, use_container_width=True)
+    _show_foldable_table("Combined Data Table", df_filtered, expanded=False)
 
     st.markdown("### Summary")
     required_cols = ["MD_THK", "TVDSS_THK", "VSH", "PHIE", "SWE"]
@@ -168,7 +207,7 @@ def _render_multi_well_analysis(df_all):
                         (df_calc["SWE"] * df_calc["TVDSS_THK"]).sum() / tvd_total,
                     ],
                 })
-                st.dataframe(summary_df, use_container_width=True)
+                _show_foldable_table("Summary Table", summary_df, expanded=False)
 
     if not all(col in df_filtered.columns for col in ["Well", "ZONE", "TVDSS_THK"]):
         st.info("Thickness plot not available: missing Well, ZONE, or TVDSS_THK.")
@@ -293,7 +332,7 @@ def _render_well_analysis_workspace():
         )
 
         st.markdown("### Well Map")
-        st.dataframe(map_df, use_container_width=True)
+        _show_foldable_table("A + B well map source table", map_df, expanded=False)
         st.plotly_chart(plot_well_map(map_df), use_container_width=True)
 
         detail_df = _merge_master_with_perforation_detail(
@@ -303,6 +342,7 @@ def _render_well_analysis_workspace():
         if not detail_df.empty:
             with st.expander("A + B detailed perforation table", expanded=False):
                 st.dataframe(detail_df, use_container_width=True)
+            _render_perforation_formation_filter(st.session_state.perforation_df)
 
         master_wells = sorted(master_df["Name"].dropna().astype(str).unique())
         st.markdown("### Well Selection From Table A")
@@ -521,7 +561,7 @@ elif menu == "Home":
 
     if master_loaded:
         st.markdown("### Well Overview")
-        st.dataframe(st.session_state.master_df.head(8), use_container_width=True)
+        _show_foldable_table("Well Overview Table", st.session_state.master_df.head(8), expanded=False)
 
     st.markdown("### Local Data Notice")
     st.info(
