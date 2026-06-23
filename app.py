@@ -182,7 +182,9 @@ def _filter_interpretation_by_perforation_depth(df_all, perforation_df):
     df_work["Well"] = df_work["Well"].astype(str).str.strip()
     df_work["MD_TOP"] = pd.to_numeric(df_work["MD_TOP"], errors="coerce")
     df_work["MD_BOTTOM"] = pd.to_numeric(df_work["MD_BOTTOM"], errors="coerce")
-    df_work["__InterpretationRowId"] = df_work.index
+    for col in ["MD_THK", "TVDSS_TOP", "TVDSS_BOTTOM", "TVDSS_THK", "VSH", "PHIE", "SWE"]:
+        if col in df_work.columns:
+            df_work[col] = pd.to_numeric(df_work[col], errors="coerce")
 
     perf_work = perforation_df.copy()
     perf_work["Well Name"] = perf_work["Well Name"].astype(str).str.strip()
@@ -196,7 +198,7 @@ def _filter_interpretation_by_perforation_depth(df_all, perforation_df):
     )
     perf_work = perf_work.dropna(subset=["Well Name", "Perforation Top (MD, m)", "Perforation Base (MD, m)"])
 
-    filtered_parts = []
+    aggregated_rows = []
     summary_rows = []
     for perforation_idx, perf_row in perf_work.iterrows():
         well_name = str(perf_row["Well Name"]).strip()
@@ -213,7 +215,38 @@ def _filter_interpretation_by_perforation_depth(df_all, perforation_df):
             ].copy()
 
         if not selected.empty:
-            filtered_parts.append(selected)
+            weight_col = "TVDSS_THK" if "TVDSS_THK" in selected.columns else None
+
+            def weighted_mean(col):
+                values = pd.to_numeric(selected[col], errors="coerce")
+                if weight_col is None:
+                    return values.mean()
+                weights = pd.to_numeric(selected[weight_col], errors="coerce")
+                valid = values.notna() & weights.notna() & (weights > 0)
+                if valid.any() and weights[valid].sum() > 0:
+                    return (values[valid] * weights[valid]).sum() / weights[valid].sum()
+                return values.mean()
+
+            zones = selected["ZONE"].dropna().astype(str).unique().tolist() if "ZONE" in selected.columns else []
+            aggregated_row = {
+                "Well": well_name,
+                "ZONE": ", ".join(zones),
+                "Perforation Top (MD, m)": depth_top,
+                "Perforation Base (MD, m)": depth_base,
+                "MD_TOP": selected["MD_TOP"].min(),
+                "MD_BOTTOM": selected["MD_BOTTOM"].max(),
+                "Matched interpretation rows": len(selected),
+            }
+            for col in ["MD_THK", "TVDSS_THK"]:
+                if col in selected.columns:
+                    aggregated_row[col] = selected[col].sum()
+            for col in ["TVDSS_TOP", "TVDSS_BOTTOM"]:
+                if col in selected.columns:
+                    aggregated_row[col] = selected[col].min() if col.endswith("TOP") else selected[col].max()
+            for col in ["VSH", "PHIE", "SWE"]:
+                if col in selected.columns:
+                    aggregated_row[col] = weighted_mean(col)
+            aggregated_rows.append(aggregated_row)
 
         summary_rows.append({
             "Well": str(well_name).strip(),
@@ -223,20 +256,15 @@ def _filter_interpretation_by_perforation_depth(df_all, perforation_df):
             "Matched interpretation rows": len(selected),
         })
 
-    if filtered_parts:
-        filtered = (
-            pd.concat(filtered_parts, ignore_index=True)
-            .drop_duplicates(subset=["__InterpretationRowId"])
-            .drop(columns=["__InterpretationRowId"])
-            .reset_index(drop=True)
-        )
+    if aggregated_rows:
+        filtered = pd.DataFrame(aggregated_rows)
     else:
-        filtered = df_work.iloc[0:0].drop(columns=["__InterpretationRowId"]).copy()
+        filtered = df_work.iloc[0:0].copy()
 
     return filtered, pd.DataFrame(summary_rows)
 
 
-def _render_perforation_row_level_charts(df_filtered):
+def _render_perforation_interval_charts(df_filtered):
     if df_filtered.empty:
         st.warning("No interpretation rows remain after filtering.")
         return
@@ -248,11 +276,11 @@ def _render_perforation_row_level_charts(df_filtered):
         return
 
     df_plot = df_filtered.copy().reset_index(drop=True)
-    df_plot["Layer No."] = df_plot.index + 1
-    df_plot["Layer"] = df_plot.apply(
+    df_plot["Interval No."] = df_plot.index + 1
+    df_plot["Perforation Interval"] = df_plot.apply(
         lambda row: (
-            f"{int(row['Layer No.'])}. {row['Well']} | {row['ZONE']} | "
-            f"{row['MD_TOP']:.1f}-{row['MD_BOTTOM']:.1f}"
+            f"{int(row['Interval No.'])}. {row['Well']} | {row['ZONE']} | "
+            f"{row['Perforation Top (MD, m)']:.1f}-{row['Perforation Base (MD, m)']:.1f}"
         ),
         axis=1
     )
@@ -260,26 +288,44 @@ def _render_perforation_row_level_charts(df_filtered):
     st.markdown("### Thickness Comparison")
     fig_thk = px.bar(
         df_plot,
-        x="Layer",
+        x="Perforation Interval",
         y="TVDSS_THK",
         color="ZONE",
-        title="Thickness by Selected Interpretation Row",
-        hover_data=["Layer No.", "Well", "ZONE", "MD_TOP", "MD_BOTTOM"]
+        title="Thickness by Perforation Interval",
+        hover_data=[
+            "Interval No.",
+            "Well",
+            "ZONE",
+            "Perforation Top (MD, m)",
+            "Perforation Base (MD, m)",
+            "MD_TOP",
+            "MD_BOTTOM",
+            "Matched interpretation rows",
+        ]
     )
-    fig_thk.update_layout(xaxis_title="Selected interpretation row")
+    fig_thk.update_layout(xaxis_title="Perforation interval")
     st.plotly_chart(fig_thk, use_container_width=True)
 
     st.markdown("### Reservoir Properties")
     for property_name in ["PHIE", "VSH", "SWE"]:
         fig_prop = px.bar(
             df_plot,
-            x="Layer",
+            x="Perforation Interval",
             y=property_name,
             color="ZONE",
-            title=f"{property_name} by Selected Interpretation Row",
-            hover_data=["Layer No.", "Well", "ZONE", "MD_TOP", "MD_BOTTOM"]
+            title=f"{property_name} by Perforation Interval",
+            hover_data=[
+                "Interval No.",
+                "Well",
+                "ZONE",
+                "Perforation Top (MD, m)",
+                "Perforation Base (MD, m)",
+                "MD_TOP",
+                "MD_BOTTOM",
+                "Matched interpretation rows",
+            ]
         )
-        fig_prop.update_layout(xaxis_title="Selected interpretation row")
+        fig_prop.update_layout(xaxis_title="Perforation interval")
         st.plotly_chart(fig_prop, use_container_width=True)
 
 
@@ -297,9 +343,8 @@ def _render_multi_well_analysis(df_all, perforation_filter_df=None):
 
     if use_perforation_depth:
         st.info(
-            "ZONE selection is disabled. Each interpretation row is kept when its MD_TOP and "
-            "MD_BOTTOM overlap an individual selected Table B perforation interval: "
-            "MD_TOP <= Perforation Base and MD_BOTTOM >= Perforation Top."
+            "ZONE selection is disabled. Interpretation rows that overlap the same Table B "
+            "perforation interval are merged. Reservoir properties are weighted by TVDSS_THK."
         )
         df_filtered, depth_summary = _filter_interpretation_by_perforation_depth(
             df_all,
@@ -327,7 +372,7 @@ def _render_multi_well_analysis(df_all, perforation_filter_df=None):
             df_filtered[col] = pd.to_numeric(df_filtered[col], errors="coerce")
 
     if use_perforation_depth:
-        _render_perforation_row_level_charts(df_filtered)
+        _render_perforation_interval_charts(df_filtered)
         return
 
     st.markdown("### Combined Data")
@@ -552,11 +597,247 @@ def _render_well_analysis_workspace():
     )
 
 
+def _load_production_table(file):
+    df = pd.read_excel(file)
+    df = df.copy()
+
+    rename_map = {
+        "Q water\nSTB/D": "Q water STB/D",
+        "Qo\nSTB/D": "Qo STB/D",
+        "Qg\nMscf/D": "Qg Mscf/D",
+        "water contirbution": "Water Contribution",
+    }
+    df = df.rename(columns=rename_map)
+
+    required_cols = [
+        "Date",
+        "Well",
+        "Reservoir",
+        "Zone",
+        "Top Perf",
+        "Bottom Perf",
+        "Q water STB/D",
+        "Qo STB/D",
+        "Qg Mscf/D",
+        "WC%",
+    ]
+    missing = [col for col in required_cols if col not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required production columns: {missing}")
+
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    text_cols = ["Well", "Reservoir", "Zone", "Status", "Remark"]
+    for col in text_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
+            df.loc[df[col].isin(["nan", "None", "NaT"]), col] = pd.NA
+
+    numeric_cols = [
+        "Top Perf",
+        "Bottom Perf",
+        "Perf Length",
+        "Inflow_Zone_top",
+        "Inflow_Zone_bot",
+        "Inflow Length",
+        "Choke",
+        "Q water STB/D",
+        "Water Contribution",
+        "Qo STB/D",
+        "Oil Contribution",
+        "Qg Mscf/D",
+        "Gas Contribution",
+        "WC%",
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df[df["Well"].notna()]
+    df = df[df["Date"].notna()]
+    df = df.dropna(how="all")
+    return df
+
+
+def _render_production_analysis_workspace():
+    st.subheader("Production Analysis")
+    st.info(
+        "Upload a PLT or production summary workbook to visualize well, zone, interval, "
+        "oil, water, gas, contribution, and water-cut information."
+    )
+
+    production_file = st.file_uploader(
+        "Upload Production / PLT Summary",
+        type=["xlsx"],
+        key="production_summary_uploader"
+    )
+
+    if production_file is not None:
+        try:
+            st.session_state.production_df = _load_production_table(production_file)
+            st.success(
+                f"Production table loaded: "
+                f"{st.session_state.production_df['Well'].nunique()} well(s), "
+                f"{len(st.session_state.production_df)} row(s)"
+            )
+        except Exception as exc:
+            st.error(str(exc))
+
+    if "production_df" not in st.session_state:
+        st.warning("Please upload a production or PLT summary workbook to continue.")
+        return
+
+    df = st.session_state.production_df.copy()
+    if df.empty:
+        st.warning("No valid production rows found after cleaning.")
+        return
+
+    filter_cols = st.columns(4)
+    with filter_cols[0]:
+        wells = sorted(df["Well"].dropna().unique())
+        selected_wells = st.multiselect(
+            "Select wells",
+            options=wells,
+            default=wells,
+            key="production_well_filter"
+        )
+    with filter_cols[1]:
+        reservoirs = sorted(df["Reservoir"].dropna().unique()) if "Reservoir" in df.columns else []
+        selected_reservoirs = st.multiselect(
+            "Select reservoirs",
+            options=reservoirs,
+            default=reservoirs,
+            key="production_reservoir_filter"
+        )
+    with filter_cols[2]:
+        zones = sorted(df["Zone"].dropna().unique()) if "Zone" in df.columns else []
+        selected_zones = st.multiselect(
+            "Select zones",
+            options=zones,
+            default=zones,
+            key="production_zone_filter"
+        )
+    with filter_cols[3]:
+        min_date = df["Date"].min().date()
+        max_date = df["Date"].max().date()
+        selected_dates = st.date_input(
+            "Date range",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            key="production_date_filter"
+        )
+
+    df_filtered = df.copy()
+    if selected_wells:
+        df_filtered = df_filtered[df_filtered["Well"].isin(selected_wells)]
+    if selected_reservoirs:
+        df_filtered = df_filtered[df_filtered["Reservoir"].isin(selected_reservoirs)]
+    if selected_zones:
+        df_filtered = df_filtered[df_filtered["Zone"].isin(selected_zones)]
+    if isinstance(selected_dates, tuple) and len(selected_dates) == 2:
+        start_date, end_date = selected_dates
+        df_filtered = df_filtered[
+            (df_filtered["Date"].dt.date >= start_date)
+            & (df_filtered["Date"].dt.date <= end_date)
+        ]
+
+    if df_filtered.empty:
+        st.warning("No production data matches the current filters.")
+        return
+
+    st.markdown("### Production Overview")
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Rows", f"{len(df_filtered):,}")
+    metric_cols[1].metric("Oil Rate", f"{df_filtered['Qo STB/D'].sum():,.1f} STB/D")
+    metric_cols[2].metric("Water Rate", f"{df_filtered['Q water STB/D'].sum():,.1f} STB/D")
+    metric_cols[3].metric("Gas Rate", f"{df_filtered['Qg Mscf/D'].sum():,.1f} Mscf/D")
+
+    _show_foldable_table("Filtered Production Table", df_filtered, expanded=False)
+
+    rate_long = df_filtered.melt(
+        id_vars=["Date", "Well", "Zone"],
+        value_vars=["Qo STB/D", "Q water STB/D", "Qg Mscf/D"],
+        var_name="Production phase",
+        value_name="Rate"
+    )
+    fig_rates = px.bar(
+        rate_long,
+        x="Well",
+        y="Rate",
+        color="Production phase",
+        barmode="group",
+        facet_col="Zone" if df_filtered["Zone"].nunique() <= 6 else None,
+        title="Oil, Water, and Gas Rate by Well and Zone",
+        hover_data=["Date", "Zone"]
+    )
+    st.plotly_chart(fig_rates, use_container_width=True)
+
+    contribution_cols = [
+        col for col in ["Water Contribution", "Oil Contribution", "Gas Contribution"]
+        if col in df_filtered.columns
+    ]
+    if contribution_cols:
+        contribution_long = df_filtered.melt(
+            id_vars=["Date", "Well", "Zone"],
+            value_vars=contribution_cols,
+            var_name="Contribution type",
+            value_name="Contribution"
+        )
+        fig_contrib = px.bar(
+            contribution_long,
+            x="Zone",
+            y="Contribution",
+            color="Contribution type",
+            barmode="group",
+            title="Production Contribution by Zone",
+            hover_data=["Date", "Well"]
+        )
+        st.plotly_chart(fig_contrib, use_container_width=True)
+
+    fig_wc = px.scatter(
+        df_filtered,
+        x="Date",
+        y="WC%",
+        color="Well",
+        symbol="Zone",
+        title="Water Cut by Date",
+        hover_data=["Zone", "Qo STB/D", "Q water STB/D", "Qg Mscf/D"]
+    )
+    st.plotly_chart(fig_wc, use_container_width=True)
+
+    interval_cols = ["Well", "Zone", "Inflow_Zone_top", "Inflow_Zone_bot", "Qo STB/D", "Q water STB/D", "Qg Mscf/D"]
+    if all(col in df_filtered.columns for col in interval_cols):
+        depth_plot_df = df_filtered.copy()
+        size_col = None
+        if "Inflow Length" in depth_plot_df.columns:
+            depth_plot_df["Inflow Length"] = pd.to_numeric(
+                depth_plot_df["Inflow Length"],
+                errors="coerce"
+            )
+            if depth_plot_df["Inflow Length"].notna().any():
+                depth_plot_df["Inflow Length"] = depth_plot_df["Inflow Length"].fillna(0).clip(lower=0)
+                size_col = "Inflow Length"
+
+        fig_depth = px.scatter(
+            depth_plot_df,
+            x="Qo STB/D",
+            y="Inflow_Zone_top",
+            color="Zone",
+            size=size_col,
+            facet_col="Well" if depth_plot_df["Well"].nunique() <= 4 else None,
+            title="Oil Rate by Inflow Depth",
+            hover_data=interval_cols
+        )
+        fig_depth.update_yaxes(autorange="reversed", title="Inflow top depth")
+        st.plotly_chart(fig_depth, use_container_width=True)
+
+
 menu = st.sidebar.radio(
     "Navigation",
     [
         "Home",
         "Well Analysis",
+        "Production Analysis",
         "Pore Typing",
         "Autonomous Pore Typing"
     ],
@@ -565,6 +846,9 @@ menu = st.sidebar.radio(
 
 if menu == "Pore Typing":
     pore_typing_ui.run()
+
+elif menu == "Production Analysis":
+    _render_production_analysis_workspace()
 
 elif menu == "Autonomous Pore Typing":
     autonomous_pore_typing_ui.run()
@@ -642,6 +926,7 @@ elif menu == "Home":
     st.markdown("### Start a Workflow")
     modules = [
         ("Well Analysis", "Map wells when metadata is available and compare multi-well interpretation results."),
+        ("Production Analysis", "Visualize PLT production rates, zone contributions, inflow intervals, and water cut."),
         ("Pore Typing", "Use trained pore typing methods and RCA overlays."),
         ("Autonomous Pore Typing", "Classify carbonate MICP curves without labels."),
     ]
